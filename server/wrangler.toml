@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Cloudflare Worker configuration for @marrow/server (SPEC §13).
+# Secrets (BETTER_AUTH_SECRET, GITHUB_CLIENT_*, R2_* presigning keys) are set as
+# Worker secrets / .dev.vars — never committed here. See .dev.vars.example.
+
+name = "marrow-server"
+main = "src/index.ts"
+compatibility_date = "2024-12-30"
+
+# better-auth pulls in Node built-ins (crypto, etc.); enable the polyfill.
+compatibility_flags = ["nodejs_compat"]
+
+# Cloudflare D1 — file tree, versions, chunk manifests, devices (SPEC §6).
+[[d1_databases]]
+binding = "DB"
+database_name = "marrow-db"
+database_id = "00000000-0000-0000-0000-000000000000" # replace with your D1 id
+migrations_dir = "migrations"
+
+# Cloudflare R2 — content-addressed chunk blobs (SPEC §6/§9). The Worker never
+# proxies bytes; it only brokers presigned URLs, but the binding documents intent.
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "marrow-chunks"
+
+# Non-secret vars. Real secrets live in .dev.vars (local) / `wrangler secret put`.
+[vars]
+BETTER_AUTH_URL = "http://localhost:8787"
+R2_BUCKET = "marrow-chunks"

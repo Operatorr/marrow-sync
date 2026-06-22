@@ -1,0 +1,21 @@
+Marrow — a sync engine for source code.
+Copyright (C) 2026 The Marrow Authors.
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. See the LICENSE file for the full text.
+
+This product bundles third-party software under their respective licenses,
+including but not limited to:
+
+  - Tauri (Apache-2.0 / MIT)
+  - React (MIT)
+  - Hono (MIT)
+  - Drizzle ORM (Apache-2.0)
+  - better-auth (MIT)
+  - The Rust `ignore`, `blake3`, `fastcdc`, `notify`, `keyring`, and `reqwest`
+    crates (Apache-2.0 / MIT)
+
+Each dependency retains its own copyright and license terms. This NOTICE file
+is provided for attribution and does not modify those terms.

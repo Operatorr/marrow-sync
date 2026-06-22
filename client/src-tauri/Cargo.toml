@@ -1,0 +1,73 @@
+[package]
+name = "marrow"
+version = "0.1.0"
+description = "Marrow — source-code sync engine desktop client"
+authors = ["Marrow"]
+edition = "2021"
+license = "AGPL-3.0-only"
+rust-version = "1.77"
+
+# The library that both the desktop binary and (potentially) mobile entry points
+# link against. `cdylib`/`staticlib` are required by Tauri's mobile tooling.
+[lib]
+name = "marrow_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+thiserror = "2"
+anyhow = "1"
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "time"] }
+
+# Filesystem watching.
+notify = "8"
+
+# Content addressing.
+blake3 = "1"
+fastcdc = "3"
+
+# Local index.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# OS secure storage for device tokens (SPEC §10: the raw device token lives ONLY
+# in the OS secure store). keyring 3.x has NO default that enables a real backend —
+# without these features `Entry` silently resolves to the in-process mock store, so
+# the platform backends must be opted into explicitly: `apple-native` (macOS/iOS
+# Keychain), `windows-native` (Credential Manager), `sync-secret-service` (Linux
+# libsecret; pulls dbus). The keychain unit tests drive an in-test `MemStore` via the
+# `SecretStore` trait, so they stay deterministic regardless of the real backend.
+keyring = { version = "3.6", features = [
+    "apple-native",
+    "windows-native",
+    "sync-secret-service",
+] }
+
+# Transfer. A pure-Rust TLS stack (rustls + webpki roots) so `cargo check`/build
+# do not require cmake/nasm for aws-lc. ring is the default rustls crypto backend.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls-webpki-roots",
+] }
+
+# Ignore engine (the same crate ripgrep uses).
+ignore = "0.4"
+
+uuid = { version = "1", features = ["v4"] }
+walkdir = "2"
+
+[features]
+# This feature is used for production builds or when a dev server is not specified,
+# DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]
+
+[dev-dependencies]
+tempfile = "3"

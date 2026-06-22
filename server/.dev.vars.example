@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Local development secrets for `wrangler dev`. Copy to `.dev.vars` (gitignored)
+# and fill in real values. NEVER commit real secrets — this file holds only
+# documented placeholders. In production these are Cloudflare Worker secrets
+# (`wrangler secret put <NAME>`). See SPEC §13/§14.
+
+# --- better-auth (SPEC §10) ---
+# A high-entropy random string used to sign sessions. Generate e.g.
+# `openssl rand -base64 32`.
+BETTER_AUTH_SECRET="replace-with-random-secret"
+# Public base URL the Worker is served from (used for OAuth callbacks).
+BETTER_AUTH_URL="http://localhost:8787"
+
+# GitHub OAuth app credentials (primary human-identity provider, SPEC §10).
+GITHUB_CLIENT_ID="replace-with-github-oauth-client-id"
+GITHUB_CLIENT_SECRET="replace-with-github-oauth-client-secret"
+
+# --- R2 presigning (SPEC §6) ---
+# S3-compatible credentials for an R2 API token scoped to the chunks bucket.
+# Used by aws4fetch to mint presigned PUT/GET URLs; the Worker never proxies bytes.
+R2_ACCOUNT_ID="replace-with-cloudflare-account-id"
+R2_ACCESS_KEY_ID="replace-with-r2-access-key-id"
+R2_SECRET_ACCESS_KEY="replace-with-r2-secret-access-key"

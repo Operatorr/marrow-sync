@@ -11,6 +11,13 @@ map; this holds the deeper sources of truth.
   enforced architecture and taste, high-throughput merge philosophy, continuous
   garbage collection.
 
+## Specifications
+
+- [Marrow — Monorepo Specification](SPEC.md) — structure, data model, sync
+  protocol, ignore semantics, chunking, auth, and tooling for the public
+  AGPL-3.0 monorepo (`client` + `server` + `packages/shared`). The scaffold in
+  this repo implements it.
+
 ## Conventions
 
 - Docs are versioned artifacts; keep them cross-linked and current.

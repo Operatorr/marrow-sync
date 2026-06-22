@@ -1,3 +1,44 @@
-# macOS
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Rust / Tauri
+client/src-tauri/target/
+target/
+
+# Cloudflare / Wrangler
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Local D1 / SQLite
+*.sqlite
+*.sqlite3
+*.db
+
+# Secrets & env
+.env
+.env.*
+!.env.example
+
+# Editor / OS
 .DS_Store
 **/.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Test coverage
+coverage/

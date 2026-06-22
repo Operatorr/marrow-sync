@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default capability for the main Marrow window: core defaults plus opening the OAuth URL in the system browser.","local":true,"windows":["main"],"permissions":["core:default","opener:default","opener:allow-open-url"]}}
