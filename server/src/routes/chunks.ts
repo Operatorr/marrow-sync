@@ -30,6 +30,7 @@ import { z } from "zod";
 import { createDb } from "../db/client";
 import { chunk } from "../db/schema";
 import { type AppBindings } from "../env";
+import { selectInChunks } from "../lib/d1";
 import { presignGet, presignPut } from "../lib/r2";
 
 const hashesSchema = z.object({
@@ -50,10 +51,13 @@ export const chunks = new Hono<AppBindings>()
     // A chunk is "present" only when a committed row exists for this user; its
     // bytes are guaranteed to be in R2 because the row is written at commit time
     // after an R2 HEAD (see commit). Anything else is reported missing → upload.
-    const present = await db
-      .select({ hash: chunk.hash })
-      .from(chunk)
-      .where(and(eq(chunk.userId, userId), inArray(chunk.hash, unique)));
+    // Chunked to stay under D1's per-query bound-parameter limit (SPEC §7).
+    const present = await selectInChunks(unique, (slice) =>
+      db
+        .select({ hash: chunk.hash })
+        .from(chunk)
+        .where(and(eq(chunk.userId, userId), inArray(chunk.hash, slice))),
+    );
     const presentSet = new Set(present.map((r) => r.hash));
     const missingHashes = unique.filter((h) => !presentSet.has(h));
 
@@ -79,10 +83,13 @@ export const chunks = new Hono<AppBindings>()
 
     // Only presign GETs for chunks this user actually owns — never mint URLs for
     // hashes absent from the caller's manifest history (ownership filter, SPEC §6).
-    const owned = await db
-      .select({ hash: chunk.hash })
-      .from(chunk)
-      .where(and(eq(chunk.userId, userId), inArray(chunk.hash, unique)));
+    // Chunked to stay under D1's per-query bound-parameter limit (SPEC §7).
+    const owned = await selectInChunks(unique, (slice) =>
+      db
+        .select({ hash: chunk.hash })
+        .from(chunk)
+        .where(and(eq(chunk.userId, userId), inArray(chunk.hash, slice))),
+    );
     const ownedHashes = owned.map((r) => r.hash);
 
     const urls = await Promise.all(

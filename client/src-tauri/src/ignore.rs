@@ -363,11 +363,21 @@ fn to_posix(p: &Path) -> String {
 }
 
 fn normalize(rel: &str) -> String {
-    rel.replace('\\', "/")
-        .split('/')
-        .filter(|s| !s.is_empty() && *s != ".")
-        .collect::<Vec<_>>()
-        .join("/")
+    // Resolve `.`/`..` segments, clamping `..` at the root so a traversal segment
+    // can never escape it. Keeps the Rust core's path handling aligned with the
+    // shared `normalizePath` contract and hardens the (TODO) write path against a
+    // hostile manifest path like `../../.bashrc` (SPEC §9).
+    let mut stack: Vec<String> = Vec::new();
+    for seg in rel.replace('\\', "/").split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                stack.pop();
+            }
+            other => stack.push(other.to_string()),
+        }
+    }
+    stack.join("/")
 }
 
 fn basename(rel: &str) -> &str {
@@ -420,6 +430,17 @@ mod tests {
         let d = e.decide("src/main.rs", false, Some(12));
         assert!(d.included);
         assert_eq!(d.reason.kind, IgnoreSourceKind::None);
+    }
+
+    #[test]
+    fn normalize_resolves_and_clamps_traversal() {
+        assert_eq!(normalize("a/b/../c"), "a/c");
+        assert_eq!(normalize("a/./b"), "a/b");
+        assert_eq!(normalize("src\\lib\\index.rs"), "src/lib/index.rs");
+        // `..` can never escape the root.
+        assert_eq!(normalize("../../.bashrc"), ".bashrc");
+        assert_eq!(normalize("a/../../b"), "b");
+        assert_eq!(normalize(".."), "");
     }
 
     #[test]

@@ -165,6 +165,9 @@ fn mtime_ms(meta: &std::fs::Metadata) -> i64 {
 #[cfg(unix)]
 fn unix_mode(meta: &std::fs::Metadata) -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
+    // NOTE: this carries the full `st_mode` (permission + file-type bits). The
+    // (TODO) write path must mask to the permission bits (e.g. `& 0o7777`) before
+    // `chmod`, so the type bits never reach `set_permissions` (SPEC §9).
     Some(meta.mode())
 }
 

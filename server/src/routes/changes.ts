@@ -31,6 +31,7 @@ import {
   type ChangesResponse,
   type CommitRequest,
   type CommitResponse,
+  hasTraversal,
   normalizePath,
 } from "@marrow/shared";
 import { zValidator } from "@hono/zod-validator";
@@ -42,7 +43,8 @@ import { z } from "zod";
 import { createDb, type Db } from "../db/client";
 import { chunk, file, fileChunk, fileVersion, syncRoot } from "../db/schema";
 import { type AppBindings } from "../env";
-import { bump, isConflict, parseSince } from "../lib/clock";
+import { selectInChunks } from "../lib/d1";
+import { isConflict, parseSince } from "../lib/clock";
 import { collectChunkHashes, groupChunks, toManifest } from "../lib/manifest";
 import { chunkKey } from "../lib/r2";
 import { errors } from "../middleware/error";
@@ -50,26 +52,68 @@ import { errors } from "../middleware/error";
 const idParamSchema = z.object({ id: z.string().min(1) });
 const sinceQuerySchema = z.object({ since: z.string().optional() });
 
-const versionManifestSchema = z.object({
-  path: z.string().min(1),
-  size: z.number().int().nonnegative(),
-  mtime: z.number().int().nonnegative(),
-  mode: z.number().int().optional(),
-  chunks: z.array(z.string().min(1)),
-  deleted: z.boolean().optional(),
-});
+/**
+ * A commit is applied as one atomic D1 batch (seq bump + per-version writes +
+ * per-chunk insert/refcount). D1 bounds the size of a batch, so these caps keep a
+ * single commit well inside that envelope; a first sync of a very large tree must
+ * be split across multiple commits by the client, each independently atomic and
+ * each advancing the cursor (SPEC §7).
+ */
+const MAX_COMMIT_VERSIONS = 1000;
+const MAX_COMMIT_CHUNK_REFS = 5000;
+
+const versionManifestSchema = z
+  .object({
+    path: z.string().min(1),
+    size: z.number().int().nonnegative(),
+    mtime: z.number().int().nonnegative(),
+    mode: z.number().int().optional(),
+    chunks: z.array(z.string().min(1)),
+    deleted: z.boolean().optional(),
+  })
+  // Preserve the chunker's invariant that a live file has ≥1 chunk and a tombstone
+  // has none — rejects a `deleted:false, chunks:[], size>0` manifest that would
+  // otherwise create a zero-chunk, nonzero-size version (SPEC §9). The chunker
+  // emits one empty chunk for a zero-byte file, so "live ⇒ ≥1 chunk" holds.
+  .superRefine((v, ctx) => {
+    if (v.deleted === true) {
+      if (v.chunks.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A deleted version must carry no chunks",
+          path: ["chunks"],
+        });
+      }
+    } else if (v.chunks.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "A live version must reference at least one chunk",
+        path: ["chunks"],
+      });
+    }
+  });
 
 const commitSchema = z
   .object({
     baseSeq: z.number().int().nonnegative(),
-    versions: z.array(versionManifestSchema).min(1),
+    versions: z.array(versionManifestSchema).min(1).max(MAX_COMMIT_VERSIONS),
   })
-  // Two manifests whose paths normalize to the same value would race to UPDATE
-  // the same `file` row / violate UNIQUE(sync_root_id, path) in one batch. Reject
-  // the whole commit so the client resends a de-duplicated manifest (SPEC §7).
   .superRefine((data, ctx) => {
+    // Two manifests whose paths normalize to the same value would race to UPDATE
+    // the same `file` row / violate UNIQUE(sync_root_id, path) in one batch; a
+    // `..` segment is a directory-traversal attempt against the (TODO) write path.
+    // Reject either so the client resends a clean, de-duplicated manifest (SPEC §7/§9).
     const seen = new Set<string>();
+    let chunkRefs = 0;
     data.versions.forEach((v, i) => {
+      chunkRefs += v.chunks.length;
+      if (hasTraversal(v.path)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Path escapes the sync root: ${v.path}`,
+          path: ["versions", i, "path"],
+        });
+      }
       const norm = normalizePath(v.path);
       if (seen.has(norm)) {
         ctx.addIssue({
@@ -80,6 +124,14 @@ const commitSchema = z
       }
       seen.add(norm);
     });
+    // Bound total chunk references so the atomic batch stays inside D1's limits.
+    if (chunkRefs > MAX_COMMIT_CHUNK_REFS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Commit references ${chunkRefs} chunks; split into commits of ≤ ${MAX_COMMIT_CHUNK_REFS}`,
+        path: ["versions"],
+      });
+    }
   });
 
 /** Load a root owned by `userId`, or throw 404. */
@@ -106,6 +158,10 @@ export const changes = new Hono<AppBindings>()
 
       const root = await loadOwnedRoot(db, rootId, userId);
 
+      // TODO(marrow): this returns every changed file with full manifests in one
+      // response — fine for incremental deltas but unbounded for a `since=0` first
+      // pull of a large root (Worker memory/response-size limits). Add a seq-paged
+      // cursor (LIMIT + a `hasMore`/next-`since`) before large roots are real (SPEC §7).
       const changedFiles = await db
         .select({
           id: file.id,
@@ -120,29 +176,31 @@ export const changes = new Hono<AppBindings>()
         .map((f) => f.currentVersionId)
         .filter((v): v is string => v !== null);
 
-      const versionRows = versionIds.length
-        ? await db
-            .select({
-              id: fileVersion.id,
-              size: fileVersion.size,
-              mtime: fileVersion.mtime,
-              mode: fileVersion.mode,
-            })
-            .from(fileVersion)
-            .where(inArray(fileVersion.id, versionIds))
-        : [];
+      // Chunked to stay under D1's per-query bound-parameter limit when a large
+      // first-sync delta touches thousands of versions (SPEC §7).
+      const versionRows = await selectInChunks(versionIds, (slice) =>
+        db
+          .select({
+            id: fileVersion.id,
+            size: fileVersion.size,
+            mtime: fileVersion.mtime,
+            mode: fileVersion.mode,
+          })
+          .from(fileVersion)
+          .where(inArray(fileVersion.id, slice)),
+      );
       const versionById = new Map(versionRows.map((v) => [v.id, v]));
 
-      const chunkRows = versionIds.length
-        ? await db
-            .select({
-              versionId: fileChunk.versionId,
-              idx: fileChunk.idx,
-              chunkHash: fileChunk.chunkHash,
-            })
-            .from(fileChunk)
-            .where(inArray(fileChunk.versionId, versionIds))
-        : [];
+      const chunkRows = await selectInChunks(versionIds, (slice) =>
+        db
+          .select({
+            versionId: fileChunk.versionId,
+            idx: fileChunk.idx,
+            chunkHash: fileChunk.chunkHash,
+          })
+          .from(fileChunk)
+          .where(inArray(fileChunk.versionId, slice)),
+      );
       const chunksByVersion = groupChunks(chunkRows);
 
       const changesOut = changedFiles.map((f) => {
@@ -175,7 +233,9 @@ export const changes = new Hono<AppBindings>()
       // Only a registered device may write content (it is `file_version.created_by`).
       if (!deviceId) throw errors.forbidden("Commit requires a device token");
 
-      const root = await loadOwnedRoot(db, rootId, userId);
+      // Ownership/existence gate (throws 404). The cursor is allocated atomically
+      // inside the batch below, not from this read, to avoid a lost-update race.
+      await loadOwnedRoot(db, rootId, userId);
 
       // Resolve every referenced chunk to a row this user owns. A chunk already
       // recorded for the user is trusted (its bytes were HEAD-verified when first
@@ -186,10 +246,13 @@ export const changes = new Hono<AppBindings>()
       const referenced = collectChunkHashes(payload.versions);
       const newChunkRows: { hash: string; size: number }[] = [];
       if (referenced.length) {
-        const existingChunks = await db
-          .select({ hash: chunk.hash })
-          .from(chunk)
-          .where(and(eq(chunk.userId, userId), inArray(chunk.hash, referenced)));
+        // Chunked to stay under D1's per-query bound-parameter limit (SPEC §7).
+        const existingChunks = await selectInChunks(referenced, (slice) =>
+          db
+            .select({ hash: chunk.hash })
+            .from(chunk)
+            .where(and(eq(chunk.userId, userId), inArray(chunk.hash, slice))),
+        );
         const ownedSet = new Set(existingChunks.map((r) => r.hash));
         const toVerify = referenced.filter((h) => !ownedSet.has(h));
 
@@ -217,17 +280,18 @@ export const changes = new Hono<AppBindings>()
       // INSERT vs UPDATE for the head, and read the prior current version so its
       // chunk refcounts can be decremented when superseded (SPEC §6 GC).
       const paths = payload.versions.map((v) => normalizePath(v.path));
-      const existing = paths.length
-        ? await db
-            .select({
-              id: file.id,
-              path: file.path,
-              updatedSeq: file.updatedSeq,
-              currentVersionId: file.currentVersionId,
-            })
-            .from(file)
-            .where(and(eq(file.syncRootId, rootId), inArray(file.path, paths)))
-        : [];
+      // Chunked to stay under D1's per-query bound-parameter limit (SPEC §7).
+      const existing = await selectInChunks(paths, (slice) =>
+        db
+          .select({
+            id: file.id,
+            path: file.path,
+            updatedSeq: file.updatedSeq,
+            currentVersionId: file.currentVersionId,
+          })
+          .from(file)
+          .where(and(eq(file.syncRootId, rootId), inArray(file.path, slice))),
+      );
       const existingByPath = new Map(existing.map((e) => [e.path, e]));
 
       // Prior current-version chunk hashes per file, for refcount decrement on
@@ -235,12 +299,12 @@ export const changes = new Hono<AppBindings>()
       const priorVersionIds = existing
         .map((e) => e.currentVersionId)
         .filter((v): v is string => v !== null);
-      const priorChunkRows = priorVersionIds.length
-        ? await db
-            .select({ versionId: fileChunk.versionId, chunkHash: fileChunk.chunkHash })
-            .from(fileChunk)
-            .where(inArray(fileChunk.versionId, priorVersionIds))
-        : [];
+      const priorChunkRows = await selectInChunks(priorVersionIds, (slice) =>
+        db
+          .select({ versionId: fileChunk.versionId, chunkHash: fileChunk.chunkHash })
+          .from(fileChunk)
+          .where(inArray(fileChunk.versionId, slice)),
+      );
       const priorChunksByVersion = new Map<string, string[]>();
       for (const r of priorChunkRows) {
         const list = priorChunksByVersion.get(r.versionId) ?? [];
@@ -248,14 +312,23 @@ export const changes = new Hono<AppBindings>()
         priorChunksByVersion.set(r.versionId, list);
       }
 
-      const newSeq = bump(root.seq);
       const now = Date.now();
       const conflicts: string[] = [];
 
-      // Build the atomic batch: bump seq, then per-version writes. D1 `batch`
-      // executes the statements in one implicit transaction.
+      // Allocate the new cursor ATOMICALLY rather than from the stale JS read:
+      // increment `seq` in SQL as the first statement of the batch, and stamp every
+      // file row via a scalar subquery that reads the just-incremented value. Both
+      // run inside D1's single batch transaction, so two devices committing the
+      // same root concurrently get distinct, monotonic cursors — no lost increment
+      // and no two commits collapsing onto one `seq` (SPEC §7). The allocated value
+      // is read back from the increment's RETURNING for the response cursor.
+      const seqExpr = sql<number>`(select ${syncRoot.seq} from ${syncRoot} where ${syncRoot.id} = ${rootId})`;
       const statements: BatchItem<"sqlite">[] = [
-        db.update(syncRoot).set({ seq: newSeq }).where(eq(syncRoot.id, rootId)),
+        db
+          .update(syncRoot)
+          .set({ seq: sql`${syncRoot.seq} + 1` })
+          .where(eq(syncRoot.id, rootId))
+          .returning({ seq: syncRoot.seq }),
       ];
 
       // Create the per-user chunk rows for HEAD-verified uploads first, so the
@@ -292,6 +365,10 @@ export const changes = new Hono<AppBindings>()
 
         // Last-write-wins: a path changed since the committer's base is a conflict,
         // but the committer still wins the head pointer (SPEC §7).
+        // TODO(marrow): the conflict copy must be made on the *losing* device,
+        // which isn't this committer — its divergent local file never reached the
+        // server, so this list is only advisory to the winner. Fully wiring the
+        // conflict-copy mechanism (signal the loser on its next pull) is deferred.
         if (prior && isConflict(prior.updatedSeq, payload.baseSeq)) {
           conflicts.push(path);
         }
@@ -307,7 +384,7 @@ export const changes = new Hono<AppBindings>()
             statements.push(
               db
                 .update(file)
-                .set({ deleted: 1, currentVersionId: null, updatedSeq: newSeq })
+                .set({ deleted: 1, currentVersionId: null, updatedSeq: seqExpr })
                 .where(eq(file.id, fileId)),
             );
           } else {
@@ -318,7 +395,7 @@ export const changes = new Hono<AppBindings>()
                 path,
                 currentVersionId: null,
                 deleted: 1,
-                updatedSeq: newSeq,
+                updatedSeq: seqExpr,
               }),
             );
           }
@@ -341,7 +418,7 @@ export const changes = new Hono<AppBindings>()
               path,
               currentVersionId: null,
               deleted: 0,
-              updatedSeq: newSeq,
+              updatedSeq: seqExpr,
             }),
           );
         }
@@ -372,13 +449,16 @@ export const changes = new Hono<AppBindings>()
         statements.push(
           db
             .update(file)
-            .set({ currentVersionId: versionId, deleted: 0, updatedSeq: newSeq })
+            .set({ currentVersionId: versionId, deleted: 0, updatedSeq: seqExpr })
             .where(eq(file.id, fileId)),
         );
       }
 
       // D1 requires a non-empty tuple for batch(); the seq bump guarantees one.
-      await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+      const result = await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+      // The first statement is the atomic seq bump; its RETURNING row carries the
+      // cursor this commit was allocated.
+      const newSeq = (result[0] as unknown as { seq: number }[])[0]!.seq;
 
       const body: CommitResponse = { seq: newSeq, conflicts };
       return c.json(body);

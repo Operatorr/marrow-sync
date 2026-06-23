@@ -12,8 +12,9 @@
 
 import { API_BASE } from "@marrow/shared";
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 
-import { createAuth } from "./auth";
+import { getAuth } from "./auth";
 import { type AppBindings } from "./env";
 import { requireAuth } from "./middleware/auth";
 import { onError } from "./middleware/error";
@@ -22,12 +23,43 @@ import { chunks } from "./routes/chunks";
 import { devices } from "./routes/devices";
 import { roots } from "./routes/roots";
 
+/**
+ * Origins the Tauri client calls the Worker from. The webview is a different
+ * origin than the API, so JSON POSTs carrying an `Authorization` header trigger a
+ * CORS preflight that must be answered or the browser-context `fetch` fails
+ * before the request is sent. The scheme/host differs per platform (SPEC §5):
+ *   - `tauri://localhost`       macOS / iOS webview
+ *   - `https://tauri.localhost` Windows (WebView2)
+ *   - `http://tauri.localhost`  Linux (WebKitGTK)
+ *   - `http://localhost:1420`   Vite dev server (`tauri dev`)
+ */
+const ALLOWED_ORIGINS = [
+  "tauri://localhost",
+  "https://tauri.localhost",
+  "http://tauri.localhost",
+  "http://localhost:1420",
+];
+
 const app = new Hono<AppBindings>().basePath(API_BASE);
 
 app.onError(onError);
 
+// Answer CORS preflight + reflect allowed origins for every route (incl. /auth/*).
+// Credentials are enabled for the cookie-based session path; the device-token
+// path is bearer-only and unaffected by it.
+app.use(
+  "*",
+  cors({
+    origin: ALLOWED_ORIGINS,
+    allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
+    allowHeaders: ["Authorization", "Content-Type"],
+    credentials: true,
+    maxAge: 86400,
+  }),
+);
+
 // better-auth handles its own routes (OAuth, session) — must precede requireAuth.
-app.on(["GET", "POST"], "/auth/*", (c) => createAuth(c.env).handler(c.req.raw));
+app.on(["GET", "POST"], "/auth/*", (c) => getAuth(c.env).handler(c.req.raw));
 
 // Health check (unauthenticated).
 app.get("/health", (c) => c.json({ ok: true }));

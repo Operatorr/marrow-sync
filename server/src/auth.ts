@@ -46,3 +46,19 @@ export function createAuth(env?: Env) {
 export const auth = createAuth();
 
 export type Auth = ReturnType<typeof createAuth>;
+
+// Within a Worker isolate the `env` binding object is stable across requests, so
+// keyed by it a WeakMap caches the better-auth instance (and its Drizzle adapter)
+// instead of rebuilding it on every authenticated request / `/auth/*` hit. If a
+// runtime ever hands a fresh `env` per request the map simply misses — no leak.
+const authCache = new WeakMap<Env, Auth>();
+
+/** Memoized runtime accessor for the per-env better-auth instance. */
+export function getAuth(env: Env): Auth {
+  let instance = authCache.get(env);
+  if (!instance) {
+    instance = createAuth(env);
+    authCache.set(env, instance);
+  }
+  return instance;
+}

@@ -28,6 +28,14 @@ describe("parseSince", () => {
     expect(parseSince("not-a-number")).toBe(0);
     expect(parseSince("-4")).toBe(0);
     expect(parseSince("1.5")).toBe(0);
+    expect(parseSince("")).toBe(0);
+  });
+
+  it("rejects Number() quirks that would silently shift the cursor", () => {
+    expect(parseSince("1e3")).toBe(0);
+    expect(parseSince("0x10")).toBe(0);
+    expect(parseSince(" 7")).toBe(0);
+    expect(parseSince("Infinity")).toBe(0);
   });
 
   it("parses a non-negative integer cursor", () => {

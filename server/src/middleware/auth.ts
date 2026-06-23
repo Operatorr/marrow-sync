@@ -14,7 +14,7 @@
 import { eq } from "drizzle-orm";
 import { type MiddlewareHandler } from "hono";
 
-import { createAuth } from "../auth";
+import { getAuth } from "../auth";
 import { createDb } from "../db/client";
 import { device } from "../db/schema";
 import { type AppBindings } from "../env";
@@ -45,7 +45,7 @@ export const requireAuth: MiddlewareHandler<AppBindings> = async (c, next) => {
   }
 
   // 2. better-auth session (cookie) — the web/management credential.
-  const session = await createAuth(c.env).api.getSession({ headers: c.req.raw.headers });
+  const session = await getAuth(c.env).api.getSession({ headers: c.req.raw.headers });
   if (session?.user?.id) {
     c.set("userId", session.user.id);
     c.set("deviceId", null);

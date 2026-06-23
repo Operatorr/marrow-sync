@@ -393,6 +393,18 @@ syncing — a key trust feature for a tool touching source code.
 - **Local index:** the Rust core keeps a local SQLite index mapping `path → (mtime, size, version
 manifest)` so re-scans are incremental — only changed files (by mtime/size) get re-chunked.
 
+### Content-integrity trust model (MVP)
+
+The server **does not re-hash uploaded bytes**. At commit it only `HEAD`s R2 to confirm an object exists
+at the per-user key `userId/<hash>` and trusts that its bytes actually hash to `<hash>` (it trusts R2's
+reported byte length, too). A buggy or malicious client can therefore PUT arbitrary bytes under a hash key
+and commit a manifest that references it. The blast radius is **strictly per-user**: chunks are keyed by
+`(user_id, hash)`, presigned URLs are `userId/`-scoped, and the `file_chunk → chunk` FK is per-user, so a
+corrupt chunk can only corrupt the uploader's own data — it can never poison another user's content or leak
+cross-user existence. This is an accepted MVP tradeoff. A future hardening (server-side verification on
+upload, or end-to-end encryption with client-verified hashes) would close it; until then clients must treat
+reassembled content as self-authored, not server-authenticated.
+
 ---
 
 ## 10. Auth

@@ -41,6 +41,9 @@ export const devices = new Hono<AppBindings>()
     const userId = c.get("userId");
     const db = createDb(c.env.DB);
 
+    // TODO(marrow): no per-user device cap yet — a user can register unbounded
+    // devices (resource exhaustion). Acceptable for MVP; add a quota before public
+    // sign-ups (SPEC §10/§11).
     const id = crypto.randomUUID();
     const token = generateDeviceToken();
     const tokenHash = await hashToken(token);

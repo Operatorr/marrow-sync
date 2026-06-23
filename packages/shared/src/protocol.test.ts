@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from "vitest";
-import { conflictCopyName, normalizePath } from "./protocol";
+import { conflictCopyName, hasTraversal, normalizePath } from "./protocol";
 import { CHUNK_SIZE, PROTOCOL_VERSION } from "./constants";
 
 describe("normalizePath", () => {
@@ -11,6 +11,30 @@ describe("normalizePath", () => {
   it("collapses duplicate slashes and strips leading ./ and /", () => {
     expect(normalizePath("./src//lib///a.ts")).toBe("src/lib/a.ts");
     expect(normalizePath("/abs/path/")).toBe("abs/path");
+  });
+
+  it("resolves interior . and .. segments", () => {
+    expect(normalizePath("a/b/../c")).toBe("a/c");
+    expect(normalizePath("a/./b")).toBe("a/b");
+  });
+
+  it("clamps .. so it can never escape the root", () => {
+    expect(normalizePath("../../.bashrc")).toBe(".bashrc");
+    expect(normalizePath("a/../../b")).toBe("b");
+    expect(normalizePath("..")).toBe("");
+  });
+});
+
+describe("hasTraversal", () => {
+  it("flags any .. segment", () => {
+    expect(hasTraversal("../x")).toBe(true);
+    expect(hasTraversal("a/../b")).toBe(true);
+    expect(hasTraversal("a\\..\\b")).toBe(true);
+  });
+
+  it("does not flag normal paths or .. inside a filename", () => {
+    expect(hasTraversal("src/lib/a.ts")).toBe(false);
+    expect(hasTraversal("weird..name.ts")).toBe(false);
   });
 });
 

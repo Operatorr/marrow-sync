@@ -43,6 +43,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: client/src-tauri
+      # `tauri::generate_context!` validates `frontendDist` (../dist) at compile
+      # time, so `cargo clippy`/`cargo test` need it to exist. The real Vite build
+      # runs in the separate `ts`/release jobs; for this Rust-only gate a minimal
+      # placeholder is enough to let the macro resolve the path.
+      - name: Stub frontend dist for tauri::generate_context!
+        run: |
+          mkdir -p client/dist
+          printf '<!doctype html><title>marrow</title>' > client/dist/index.html
       - run: cargo fmt --all --check
         working-directory: client/src-tauri
       - run: cargo clippy --all-targets --all-features -- -D warnings

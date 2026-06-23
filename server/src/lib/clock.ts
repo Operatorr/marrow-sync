@@ -22,9 +22,12 @@ export function isConflict(fileUpdatedSeq: number, baseSeq: number): boolean {
   return fileUpdatedSeq > baseSeq;
 }
 
-/** Parse a `?since=` cursor query value into a non-negative integer, defaulting to 0. */
+/**
+ * Parse a `?since=` cursor query value into a non-negative integer, defaulting to
+ * 0. Only a plain run of digits is accepted — this rejects `Number()` quirks like
+ * `"1e3"` (→ 1000) and `"0x10"` (→ 16) that would silently shift the cursor.
+ */
 export function parseSince(raw: string | undefined): number {
-  if (raw === undefined) return 0;
-  const n = Number(raw);
-  return Number.isInteger(n) && n >= 0 ? n : 0;
+  if (raw === undefined || !/^\d+$/.test(raw)) return 0;
+  return Number(raw);
 }

@@ -175,15 +175,37 @@ export interface ApiError {
 
 /**
  * Normalize a path to the POSIX, root-relative form used on the wire: backslashes
- * to forward slashes, collapsed duplicate slashes, no leading `./` or `/`.
+ * to forward slashes, collapsed duplicate slashes, no leading `./` or `/`, and
+ * `.`/`..` segments resolved. A `..` is **clamped at the root** — it can never
+ * resolve above the sync root — so a hostile manifest (`../../.bashrc`) cannot
+ * steer a future write outside the root (SPEC §9). Use {@link hasTraversal} to
+ * reject such input loudly at the commit/write boundary instead of silently
+ * rewriting it.
  */
 export function normalizePath(path: string): string {
+  const stack: string[] = [];
+  for (const seg of path.replace(/\\/g, "/").split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      stack.pop(); // clamp at the root: a traversal segment never escapes it
+      continue;
+    }
+    stack.push(seg);
+  }
+  return stack.join("/");
+}
+
+/**
+ * Whether a raw path contains a `..` (directory-traversal) segment.
+ * {@link normalizePath} clamps these so they can't escape the root, but the
+ * commit/write boundary uses this to reject the manifest outright — silently
+ * rewriting `../x` could collide two distinct paths onto one (SPEC §9).
+ */
+export function hasTraversal(path: string): boolean {
   return path
     .replace(/\\/g, "/")
-    .replace(/\/{2,}/g, "/")
-    .replace(/^\.\//, "")
-    .replace(/^\/+/, "")
-    .replace(/\/+$/, "");
+    .split("/")
+    .some((seg) => seg === "..");
 }
 
 /**

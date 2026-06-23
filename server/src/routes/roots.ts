@@ -45,6 +45,8 @@ export const roots = new Hono<AppBindings>()
     const userId = c.get("userId");
     const db = createDb(c.env.DB);
 
+    // TODO(marrow): no per-user sync-root cap yet (resource exhaustion). Fine for
+    // MVP; add a quota before public sign-ups (SPEC §11).
     const root = {
       id: crypto.randomUUID(),
       userId,
