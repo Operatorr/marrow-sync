@@ -2,9 +2,9 @@ Marrow — a sync engine for source code.
 Copyright (C) 2026 The Marrow Authors.
 
 This program is free software: you can redistribute it and/or modify it under
-the terms of the GNU Affero General Public License as published by the Free
-Software Foundation, either version 3 of the License, or (at your option) any
-later version. See the LICENSE file for the full text.
+the terms of version 3 of the GNU Affero General Public License as published by
+the Free Software Foundation (AGPL-3.0-only). See the LICENSE file for the full
+text.
 
 This product bundles third-party software under their respective licenses,
 including but not limited to:
@@ -12,6 +12,9 @@ including but not limited to:
   - Tauri (Apache-2.0 / MIT)
   - React (MIT)
   - Hono (MIT)
+  - Zod (MIT)
+  - @hono/zod-validator (MIT)
+  - aws4fetch (MIT)
   - Drizzle ORM (Apache-2.0)
   - better-auth (MIT)
   - The Rust `ignore`, `blake3`, `fastcdc`, `notify`, `keyring`, and `reqwest`

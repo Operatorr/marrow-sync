@@ -36,10 +36,18 @@ describe("parseSince", () => {
     expect(parseSince("0x10")).toBe(0);
     expect(parseSince(" 7")).toBe(0);
     expect(parseSince("Infinity")).toBe(0);
+    expect(parseSince("+7")).toBe(0);
   });
 
-  it("parses a non-negative integer cursor", () => {
+  it("rejects magnitudes beyond MAX_SAFE_INTEGER rather than returning an imprecise cursor", () => {
+    expect(parseSince("9".repeat(30))).toBe(0);
+    expect(parseSince(String(Number.MAX_SAFE_INTEGER) + "0")).toBe(0);
+    expect(parseSince(String(Number.MAX_SAFE_INTEGER))).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  it("parses a non-negative integer cursor (incl. leading zeros)", () => {
     expect(parseSince("0")).toBe(0);
     expect(parseSince("17")).toBe(17);
+    expect(parseSince("007")).toBe(7);
   });
 });

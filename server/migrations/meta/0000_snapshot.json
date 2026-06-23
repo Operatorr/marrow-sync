@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "adc4dfca-5e7c-4630-ab51-3a8f6863f04e",
+  "id": "84945fff-9471-4f8b-b95b-2f8cca9eb4bc",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "account": {
@@ -188,7 +188,16 @@
         }
       },
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "chunk_refcount_nonneg": {
+          "name": "chunk_refcount_nonneg",
+          "value": "refcount >= 0"
+        },
+        "chunk_size_nonneg": {
+          "name": "chunk_size_nonneg",
+          "value": "size >= 0"
+        }
+      }
     },
     "device": {
       "name": "device",
@@ -251,12 +260,12 @@
           ],
           "isUnique": false
         },
-        "device_token_hash_idx": {
-          "name": "device_token_hash_idx",
+        "device_token_hash_unq": {
+          "name": "device_token_hash_unq",
           "columns": [
             "token_hash"
           ],
-          "isUnique": false
+          "isUnique": true
         }
       },
       "foreignKeys": {
@@ -360,7 +369,12 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "file_deleted_bool": {
+          "name": "file_deleted_bool",
+          "value": "deleted in (0, 1)"
+        }
+      }
     },
     "file_chunk": {
       "name": "file_chunk",
@@ -394,7 +408,16 @@
           "autoincrement": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "file_chunk_user_hash_idx": {
+          "name": "file_chunk_user_hash_idx",
+          "columns": [
+            "user_id",
+            "chunk_hash"
+          ],
+          "isUnique": false
+        }
+      },
       "foreignKeys": {
         "file_chunk_version_id_file_version_id_fk": {
           "name": "file_chunk_version_id_file_version_id_fk",
@@ -499,7 +522,7 @@
           "name": "created_by",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
           "autoincrement": false
         }
       },
@@ -536,13 +559,18 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "file_version_size_nonneg": {
+          "name": "file_version_size_nonneg",
+          "value": "size >= 0"
+        }
+      }
     },
     "session": {
       "name": "session",

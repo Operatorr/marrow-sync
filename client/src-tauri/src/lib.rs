@@ -22,9 +22,17 @@ use state::AppState;
 /// Build and run the Tauri application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Log panics (with location/backtrace info) before unwinding so a panic in a
+    // command or background task is visible rather than silently swallowed.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        eprintln!("marrow: panic: {info}");
+        default_hook(info);
+    }));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState::new())
+        .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             commands::auth_status,
             commands::sign_in_with_github,

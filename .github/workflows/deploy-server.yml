@@ -2,7 +2,7 @@ name: Deploy server
 
 on:
   push:
-    branches: [main, master]
+    branches: [master]
     paths:
       - "server/**"
       - "packages/shared/**"
@@ -12,19 +12,26 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
 jobs:
   deploy:
     name: wrangler deploy
     runs-on: ubuntu-latest
+    environment: production
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @marrow/server lint
       - run: pnpm --filter @marrow/server typecheck
+      - run: pnpm --filter @marrow/server test
       - name: Apply D1 migrations
         run: pnpm --filter @marrow/server db:migrate:remote
         env:

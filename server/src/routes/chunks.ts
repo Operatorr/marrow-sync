@@ -27,15 +27,52 @@ import { and, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 
-import { createDb } from "../db/client";
+import { createDb, type Db } from "../db/client";
 import { chunk } from "../db/schema";
 import { type AppBindings } from "../env";
 import { selectInChunks } from "../lib/d1";
 import { presignGet, presignPut } from "../lib/r2";
 
+/** Max chunk hashes accepted in one check/download round (the client batches). */
+const MAX_HASHES_PER_REQUEST = 1000;
+
+/** Max presigned URLs built concurrently, to bound CPU/subrequest fan-out. */
+const PRESIGN_CONCURRENCY = 16;
+
+/** BLAKE3 content-address: 64 lowercase hex chars (SPEC §9, `HASH_ALGORITHM`). */
+const hashSchema = z.string().regex(/^[0-9a-f]{64}$/, "expected a 64-char lowercase hex hash");
+
 const hashesSchema = z.object({
-  hashes: z.array(z.string().min(1)).max(10_000),
+  hashes: z.array(hashSchema).max(MAX_HASHES_PER_REQUEST),
 });
+
+/** Subset of `hashes` for which this user owns a committed `chunk` row (SPEC §6). */
+async function findOwnedHashes(db: Db, userId: string, hashes: string[]): Promise<Set<string>> {
+  const rows = await selectInChunks(hashes, (slice) =>
+    db
+      .select({ hash: chunk.hash })
+      .from(chunk)
+      .where(and(eq(chunk.userId, userId), inArray(chunk.hash, slice))),
+  );
+  return new Set(rows.map((r) => r.hash));
+}
+
+/** Map with bounded concurrency so a large hash list can't spawn unbounded work. */
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out: R[] = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (let i = next++; i < items.length; i = next++) {
+      out[i] = await fn(items[i]!);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
 
 export const chunks = new Hono<AppBindings>()
   .post("/check", zValidator("json", hashesSchema), async (c) => {
@@ -51,22 +88,14 @@ export const chunks = new Hono<AppBindings>()
     // A chunk is "present" only when a committed row exists for this user; its
     // bytes are guaranteed to be in R2 because the row is written at commit time
     // after an R2 HEAD (see commit). Anything else is reported missing → upload.
-    // Chunked to stay under D1's per-query bound-parameter limit (SPEC §7).
-    const present = await selectInChunks(unique, (slice) =>
-      db
-        .select({ hash: chunk.hash })
-        .from(chunk)
-        .where(and(eq(chunk.userId, userId), inArray(chunk.hash, slice))),
-    );
-    const presentSet = new Set(present.map((r) => r.hash));
+    const presentSet = await findOwnedHashes(db, userId, unique);
     const missingHashes = unique.filter((h) => !presentSet.has(h));
 
-    const missing = await Promise.all(
-      missingHashes.map(async (hash) => ({
-        hash,
-        uploadUrl: await presignPut(c.env, userId, hash),
-      })),
-    );
+    // Results are keyed by hash (not positional); duplicates were collapsed above.
+    const missing = await mapLimit(missingHashes, PRESIGN_CONCURRENCY, async (hash) => ({
+      hash,
+      uploadUrl: await presignPut(c.env, userId, hash),
+    }));
 
     const body: ChunkCheckResponse = { missing };
     return c.json(body);
@@ -81,23 +110,16 @@ export const chunks = new Hono<AppBindings>()
       return c.json({ urls: [] } satisfies ChunkDownloadResponse);
     }
 
-    // Only presign GETs for chunks this user actually owns — never mint URLs for
-    // hashes absent from the caller's manifest history (ownership filter, SPEC §6).
-    // Chunked to stay under D1's per-query bound-parameter limit (SPEC §7).
-    const owned = await selectInChunks(unique, (slice) =>
-      db
-        .select({ hash: chunk.hash })
-        .from(chunk)
-        .where(and(eq(chunk.userId, userId), inArray(chunk.hash, slice))),
-    );
-    const ownedHashes = owned.map((r) => r.hash);
+    // Only presign GETs for chunks this user owns (a `chunk` row exists for them).
+    // Hashes without an owned row are silently omitted from `urls` — the client
+    // diffs the response against its request to find them (SPEC §6).
+    const ownedSet = await findOwnedHashes(db, userId, unique);
+    const ownedHashes = unique.filter((h) => ownedSet.has(h));
 
-    const urls = await Promise.all(
-      ownedHashes.map(async (hash) => ({
-        hash,
-        downloadUrl: await presignGet(c.env, userId, hash),
-      })),
-    );
+    const urls = await mapLimit(ownedHashes, PRESIGN_CONCURRENCY, async (hash) => ({
+      hash,
+      downloadUrl: await presignGet(c.env, userId, hash),
+    }));
 
     const body: ChunkDownloadResponse = { urls };
     return c.json(body);

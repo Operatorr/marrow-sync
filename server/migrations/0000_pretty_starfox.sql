@@ -22,7 +22,9 @@ CREATE TABLE `chunk` (
 	`user_id` text NOT NULL,
 	`refcount` integer DEFAULT 0 NOT NULL,
 	PRIMARY KEY(`user_id`, `hash`),
-	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
+	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,
+	CONSTRAINT "chunk_refcount_nonneg" CHECK(refcount >= 0),
+	CONSTRAINT "chunk_size_nonneg" CHECK(size >= 0)
 );
 --> statement-breakpoint
 CREATE TABLE `device` (
@@ -37,7 +39,7 @@ CREATE TABLE `device` (
 );
 --> statement-breakpoint
 CREATE INDEX `device_user_id_idx` ON `device` (`user_id`);--> statement-breakpoint
-CREATE INDEX `device_token_hash_idx` ON `device` (`token_hash`);--> statement-breakpoint
+CREATE UNIQUE INDEX `device_token_hash_unq` ON `device` (`token_hash`);--> statement-breakpoint
 CREATE TABLE `file` (
 	`id` text PRIMARY KEY NOT NULL,
 	`sync_root_id` text NOT NULL,
@@ -45,7 +47,8 @@ CREATE TABLE `file` (
 	`current_version_id` text,
 	`deleted` integer DEFAULT 0 NOT NULL,
 	`updated_seq` integer NOT NULL,
-	FOREIGN KEY (`sync_root_id`) REFERENCES `sync_root`(`id`) ON UPDATE no action ON DELETE cascade
+	FOREIGN KEY (`sync_root_id`) REFERENCES `sync_root`(`id`) ON UPDATE no action ON DELETE cascade,
+	CONSTRAINT "file_deleted_bool" CHECK(deleted in (0, 1))
 );
 --> statement-breakpoint
 CREATE INDEX `file_root_seq_idx` ON `file` (`sync_root_id`,`updated_seq`);--> statement-breakpoint
@@ -61,6 +64,7 @@ CREATE TABLE `file_chunk` (
 	FOREIGN KEY (`user_id`,`chunk_hash`) REFERENCES `chunk`(`user_id`,`hash`) ON UPDATE no action ON DELETE no action
 );
 --> statement-breakpoint
+CREATE INDEX `file_chunk_user_hash_idx` ON `file_chunk` (`user_id`,`chunk_hash`);--> statement-breakpoint
 CREATE TABLE `file_version` (
 	`id` text PRIMARY KEY NOT NULL,
 	`file_id` text NOT NULL,
@@ -68,9 +72,10 @@ CREATE TABLE `file_version` (
 	`mtime` integer NOT NULL,
 	`mode` integer,
 	`created_at` integer NOT NULL,
-	`created_by` text NOT NULL,
+	`created_by` text,
 	FOREIGN KEY (`file_id`) REFERENCES `file`(`id`) ON UPDATE no action ON DELETE cascade,
-	FOREIGN KEY (`created_by`) REFERENCES `device`(`id`) ON UPDATE no action ON DELETE no action
+	FOREIGN KEY (`created_by`) REFERENCES `device`(`id`) ON UPDATE no action ON DELETE set null,
+	CONSTRAINT "file_version_size_nonneg" CHECK(size >= 0)
 );
 --> statement-breakpoint
 CREATE INDEX `file_version_file_id_idx` ON `file_version` (`file_id`);--> statement-breakpoint

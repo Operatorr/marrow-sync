@@ -24,20 +24,27 @@ import { errors } from "./error";
 export const requireAuth: MiddlewareHandler<AppBindings> = async (c, next) => {
   const header = c.req.header("Authorization");
 
-  // 1. Device token (Bearer) — the primary sync credential.
-  if (header?.startsWith("Bearer ")) {
-    const token = header.slice("Bearer ".length).trim();
-    if (token.length === 0) throw errors.unauthorized("Empty bearer token");
+  // 1. Device token (Bearer) — the primary sync credential. The auth scheme is
+  // case-insensitive per RFC 7235, so accept `bearer`/`BEARER` too. All token
+  // failures return the SAME generic 401 so the response can't be used to probe
+  // which branch was taken (no token-existence enumeration).
+  const bearer = header ? /^Bearer[ \t]+(\S.*)$/i.exec(header) : null;
+  if (bearer) {
+    const token = bearer[1]!.trim();
 
     const tokenHash = await hashToken(token);
     const db = createDb(c.env.DB);
+    // Looked up by sha-256 hash via the UNIQUE index on token_hash. The compared
+    // value is a hash of a 256-bit secret, so an indexed equality is the standard
+    // mitigation — do NOT refactor to fetch-then-compare without a constant-time
+    // comparison, which would introduce a timing oracle.
     const [row] = await db
       .select({ id: device.id, userId: device.userId })
       .from(device)
       .where(eq(device.tokenHash, tokenHash))
       .limit(1);
 
-    if (!row) throw errors.unauthorized("Invalid device token");
+    if (!row) throw errors.unauthorized();
 
     c.set("userId", row.userId);
     c.set("deviceId", row.id);

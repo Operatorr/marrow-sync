@@ -4,11 +4,18 @@
  * Protocol + tuning constants shared by the Rust core, the Worker, and the UI.
  *
  * This file has **no runtime dependencies** on Node or browser APIs so it imports
- * cleanly into the Worker, the Vite/React bundle, and (conceptually) mirrors the
- * Rust `constants` module.
+ * cleanly into the Worker and the Vite/React bundle. The Rust core mirrors the
+ * relevant values inline (e.g. `MAX_FILE_SIZE`, `ALWAYS_IGNORED` in `ignore.rs`,
+ * chunk sizes in `chunker.rs`); those copies must be kept in lockstep with these.
  */
 
-/** Bumped on any wire-incompatible change to {@link "./protocol"}. */
+/**
+ * Bumped on any wire-incompatible change to {@link "./protocol"}.
+ *
+ * Informational for now: there is no version handshake yet, so a mismatched
+ * client and server are not rejected at runtime. Wiring this into a request
+ * header + negotiation is post-MVP (SPEC §12).
+ */
 export const PROTOCOL_VERSION = 1 as const;
 
 /** All API routes are mounted under this base path (see SPEC §7). */
@@ -33,8 +40,11 @@ export const CHUNK_SIZE = {
   max: 256 * KIB,
 } as const;
 
-/** Files larger than this are never synced unless explicitly re-included (SPEC §8.4). */
-export const MAX_FILE_SIZE = 512 * MIB;
+/**
+ * Files larger than this are never synced unless explicitly re-included (SPEC §8.4).
+ * Mirrored by `MAX_FILE_SIZE` in the Rust core (`ignore.rs`) — keep the two in lockstep.
+ */
+export const MAX_FILE_SIZE: number = 512 * MIB;
 
 /** Ignore-control filenames Marrow honors (SPEC §8). */
 export const IGNORE_FILES = {
@@ -46,7 +56,8 @@ export const IGNORE_FILES = {
 /**
  * Always-ignored entries regardless of config (SPEC §8.4). `.git` can never be
  * re-included; the rest may be overridden only by an explicit `!` in
- * `.marrowignore`.
+ * `.marrowignore`. Mirrored verbatim by `ALWAYS_IGNORED` in the Rust engine
+ * (`ignore.rs`); the Rust copy is authoritative for matching — keep them equal.
  */
 export const ALWAYS_IGNORED = [
   ".git",

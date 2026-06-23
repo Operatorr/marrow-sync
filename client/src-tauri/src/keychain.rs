@@ -12,6 +12,9 @@
 //! `Entry::new` its *own* empty credential, so a real round-trip across separate
 //! `Entry` instances is untestable through it — driving the trait directly with one
 //! shared store is what actually exercises this module's behavior.
+//!
+//! IMPORTANT: the raw device token must NEVER be logged or included in an error
+//! message. Errors here describe the *failure*, never the secret.
 
 use keyring::Entry;
 
@@ -21,10 +24,33 @@ const SERVICE: &str = "com.marrow.app";
 const DEVICE_TOKEN_USER: &str = "device-token";
 
 /// Errors from secure-store operations.
+///
+/// Actionable failures (the OS denied access to the secure store, or it holds
+/// multiple ambiguous matches) get their own variants with user-facing guidance,
+/// instead of collapsing every non-`NoEntry` error into one opaque message. Error
+/// text never contains the token itself.
 #[derive(Debug, thiserror::Error)]
 pub enum KeychainError {
+    /// The OS secure store is locked or denied access — the user typically must
+    /// unlock the keychain / grant the app permission and retry.
+    #[error("the OS secure store denied access — unlock your keychain and try again")]
+    NoStorageAccess(#[source] keyring::Error),
+    /// Multiple credentials matched; the store can't pick one unambiguously.
+    #[error("multiple matching credentials found in the OS secure store")]
+    Ambiguous(#[source] keyring::Error),
+    /// Any other keyring failure.
     #[error("keychain error: {0}")]
-    Keyring(#[from] keyring::Error),
+    Keyring(#[source] keyring::Error),
+}
+
+impl From<keyring::Error> for KeychainError {
+    fn from(e: keyring::Error) -> Self {
+        match e {
+            keyring::Error::NoStorageAccess(_) => KeychainError::NoStorageAccess(e),
+            keyring::Error::Ambiguous(_) => KeychainError::Ambiguous(e),
+            other => KeychainError::Keyring(other),
+        }
+    }
 }
 
 /// A minimal secret-store seam over the keyring `Entry` API, so the mapping logic

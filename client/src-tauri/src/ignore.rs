@@ -6,9 +6,13 @@
 //!
 //! 1. **Always-ignored** entries (`.git`, `.DS_Store`, `Thumbs.db`, `.marrow`)
 //!    short-circuit. `.git` can never be re-included; the rest may be re-included
-//!    only by an explicit `!` negation in a `.marrowignore`.
-//! 2. **`.gitkeep`** forces its containing directory to be kept; the `.gitkeep`
-//!    file itself is always included.
+//!    only by an explicit `!` negation in a `.marrowignore`. `.marrow` is anchored
+//!    to the *root* segment only (a deep `docs/.marrow/x` is user content); the
+//!    others match at any depth. Segment comparison is case-insensitive so
+//!    `.GIT`/`.Git` on macOS/Windows are caught.
+//! 2. **`.gitkeep`**: the `.gitkeep` file itself is always synced.
+//!    TODO(marrow): materializing the empty directory from a synced `.gitkeep`
+//!    on the write path is not yet implemented.
 //! 3. **Cascading `.gitignore`** (root and nested): deeper files take precedence,
 //!    later lines within a file override earlier ones, `!pattern` re-includes.
 //! 4. **`.marrowignore`** is layered *on top* of `.gitignore`: a path is excluded
@@ -33,8 +37,12 @@ const GITIGNORE: &str = ".gitignore";
 const MARROWIGNORE: &str = ".marrowignore";
 const GITKEEP: &str = ".gitkeep";
 
-/// Entries ignored regardless of config (SPEC §8.4).
-const ALWAYS_IGNORED: [&str; 4] = [".git", ".DS_Store", "Thumbs.db", ".marrow"];
+/// Entries ignored regardless of config (SPEC §8.4), matched at *any* depth.
+const ALWAYS_IGNORED: [&str; 3] = [".git", ".DS_Store", "Thumbs.db"];
+/// Entries ignored only when they are the *root* segment. `.marrow` is the
+/// engine's own metadata dir at the root; a nested `docs/.marrow/x` is user
+/// content and must not be swept up by the always-ignored short-circuit.
+const ALWAYS_IGNORED_ROOT_ONLY: [&str; 1] = [".marrow"];
 /// Entries that can never be re-included by any rule.
 const NEVER_SYNCED: [&str; 1] = [".git"];
 
@@ -116,7 +124,10 @@ impl IgnoreEngine {
         let mut git = Vec::new();
         let mut marrow = Vec::new();
 
+        // `follow_links(false)`: never traverse symlinked directories when
+        // discovering ignore files — a symlink could point outside the root.
         for entry in walkdir::WalkDir::new(&root)
+            .follow_links(false)
             .into_iter()
             .filter_map(Result::ok)
         {
@@ -133,15 +144,20 @@ impl IgnoreEngine {
             if entry.path().components().any(|c| c.as_os_str() == ".git") {
                 continue;
             }
-            if let Some(matcher) = build_scoped(&root, entry.path())? {
+            // Never read a symlinked ignore file: its target could resolve outside
+            // the sync root (e.g. a planted `.marrowignore -> /etc/...`).
+            if entry.path_is_symlink() {
+                continue;
+            }
+            if let Some(matcher) = build_scoped(&root, entry.path()) {
                 bucket.push(matcher);
             }
         }
 
         // Shallow first so that, when we iterate in reverse, deeper matchers take
-        // precedence (Git semantics).
-        git.sort_by_key(|a| depth(&a.dir));
-        marrow.sort_by_key(|a| depth(&a.dir));
+        // precedence (Git semantics). `sort_by_cached_key` computes each depth once.
+        git.sort_by_cached_key(|a| depth(&a.dir));
+        marrow.sort_by_cached_key(|a| depth(&a.dir));
 
         Ok(Self { root, git, marrow })
     }
@@ -156,7 +172,7 @@ impl IgnoreEngine {
 
         // (1) Always-ignored. `.marrowignore` negation may re-include all but `.git`.
         if let Some(seg) = first_always_segment(&rel) {
-            let never = NEVER_SYNCED.contains(&seg.as_str());
+            let never = NEVER_SYNCED.iter().any(|e| seg.eq_ignore_ascii_case(e));
             if !never {
                 if let Some(reason) = self.marrow_negation(&rel, is_dir) {
                     return IgnoreDecision {
@@ -309,10 +325,25 @@ impl MatchHit {
 
 /// Build a scoped matcher for one ignore file, rooted at its own directory so its
 /// patterns match relative to where the file lives (correct nested semantics).
-fn build_scoped(root: &Path, file: &Path) -> anyhow::Result<Option<ScopedMatcher>> {
+///
+/// Returns `None` (skipping just this matcher, not aborting the engine) on any
+/// failure, but never *silently*: a non-`NotFound` read error or a `build()`
+/// failure is logged so a misconfigured/unreadable ignore file is visible rather
+/// than fail-open. (No tracing dep in this crate, so we log via `eprintln!`.)
+fn build_scoped(root: &Path, file: &Path) -> Option<ScopedMatcher> {
     let contents = match std::fs::read_to_string(file) {
         Ok(c) => c,
-        Err(_) => return Ok(None),
+        Err(e) => {
+            // A vanished file (race during the walk) is expected; anything else is
+            // worth surfacing — we are about to skip this matcher entirely.
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "marrow: skipping ignore file {} (read error: {e})",
+                    file.display()
+                );
+            }
+            return None;
+        }
     };
     let dir = file.parent().unwrap_or(root);
     let mut builder = GitignoreBuilder::new(dir);
@@ -325,7 +356,18 @@ fn build_scoped(root: &Path, file: &Path) -> anyhow::Result<Option<ScopedMatcher
             continue;
         }
     }
-    let gitignore = builder.build()?;
+    let gitignore = match builder.build() {
+        Ok(g) => g,
+        Err(e) => {
+            // One bad ignore file must not abort the whole engine: skip it (consistent
+            // with the read-error handling above) but log so it is not invisible.
+            eprintln!(
+                "marrow: skipping ignore file {} (build error: {e})",
+                file.display()
+            );
+            return None;
+        }
+    };
 
     let rel_dir = dir
         .strip_prefix(root)
@@ -336,12 +378,12 @@ fn build_scoped(root: &Path, file: &Path) -> anyhow::Result<Option<ScopedMatcher
         .map(to_posix)
         .unwrap_or_else(|_| file.to_string_lossy().to_string());
 
-    Ok(Some(ScopedMatcher {
+    Some(ScopedMatcher {
         dir: rel_dir,
         file_rel,
         gitignore,
         lines: contents.lines().map(str::to_string).collect(),
-    }))
+    })
 }
 
 // --- small path helpers (POSIX, root-relative) ---
@@ -384,10 +426,21 @@ fn basename(rel: &str) -> &str {
     rel.rsplit('/').next().unwrap_or(rel)
 }
 
-/// First path segment that equals an always-ignored entry, if any.
+/// First path segment that equals an always-ignored entry, if any. Comparison is
+/// case-insensitive so `.GIT`/`.Git` (macOS/Windows case-insensitive filesystems)
+/// are caught. `.marrow` is anchored to the root segment only — any-depth entries
+/// (`.git`, `.DS_Store`, `Thumbs.db`) match at every level.
 fn first_always_segment(rel: &str) -> Option<String> {
-    rel.split('/')
-        .find(|seg| ALWAYS_IGNORED.contains(seg))
+    let mut segs = rel.split('/');
+    if let Some(first) = segs.clone().next() {
+        if ALWAYS_IGNORED_ROOT_ONLY
+            .iter()
+            .any(|e| first.eq_ignore_ascii_case(e))
+        {
+            return Some(first.to_string());
+        }
+    }
+    segs.find(|seg| ALWAYS_IGNORED.iter().any(|e| seg.eq_ignore_ascii_case(e)))
         .map(str::to_string)
 }
 
@@ -507,6 +560,30 @@ mod tests {
     }
 
     #[test]
+    fn always_ignored_matches_case_insensitively() {
+        let td = TempDir::new().unwrap();
+        let e = engine(&td);
+        // `.GIT` on a case-insensitive filesystem must still be caught and never synced.
+        let d = e.decide(".GIT/config", false, Some(1));
+        assert!(!d.included, ".GIT is the .git dir on macOS/Windows");
+        assert_eq!(d.reason.kind, IgnoreSourceKind::Always);
+    }
+
+    #[test]
+    fn marrow_dir_ignored_only_at_root() {
+        let td = TempDir::new().unwrap();
+        let e = engine(&td);
+        // Root-level `.marrow` is the engine's own metadata — always ignored.
+        let root_marrow = e.decide(".marrow/index.sqlite", false, Some(1));
+        assert!(!root_marrow.included);
+        assert_eq!(root_marrow.reason.kind, IgnoreSourceKind::Always);
+        // A deep `.marrow` is user content and must NOT be swept up.
+        let deep = e.decide("docs/.marrow/notes.md", false, Some(1));
+        assert!(deep.included, "nested .marrow is user content");
+        assert_eq!(deep.reason.kind, IgnoreSourceKind::None);
+    }
+
+    #[test]
     fn always_ignored_ds_store_blocked_but_reincludable() {
         let td = TempDir::new().unwrap();
         let e = engine(&td);
@@ -570,6 +647,67 @@ mod tests {
             !built.included,
             "valid build/ rule after the bad line applies"
         );
+    }
+
+    #[test]
+    fn nested_marrowignore_takes_precedence() {
+        let td = TempDir::new().unwrap();
+        write(td.path(), ".marrowignore", "*.secret\n");
+        // Deeper .marrowignore re-includes a .secret under config/.
+        write(td.path(), "config/.marrowignore", "!keep.secret\n");
+        let e = engine(&td);
+
+        let blocked = e.decide("top.secret", false, Some(1));
+        assert!(!blocked.included);
+        assert_eq!(blocked.reason.kind, IgnoreSourceKind::Marrowignore);
+
+        let kept = e.decide("config/keep.secret", false, Some(1));
+        assert!(kept.included, "deeper !keep.secret should re-include");
+        assert_eq!(kept.reason.kind, IgnoreSourceKind::Marrowignore);
+        assert_eq!(kept.reason.file.as_deref(), Some("config/.marrowignore"));
+    }
+
+    #[test]
+    fn three_level_gitignore_cascade() {
+        let td = TempDir::new().unwrap();
+        // Level 0: ignore all .log
+        write(td.path(), ".gitignore", "*.log\n");
+        // Level 1: re-include .log under a/
+        write(td.path(), "a/.gitignore", "!*.log\n");
+        // Level 2: ignore again under a/b/
+        write(td.path(), "a/b/.gitignore", "*.log\n");
+        let e = engine(&td);
+
+        assert!(!e.decide("root.log", false, Some(1)).included, "level 0");
+        assert!(e.decide("a/mid.log", false, Some(1)).included, "level 1");
+        let deep = e.decide("a/b/deep.log", false, Some(1));
+        assert!(!deep.included, "level 2 re-ignores");
+        assert_eq!(deep.reason.file.as_deref(), Some("a/b/.gitignore"));
+    }
+
+    #[test]
+    fn decide_clamps_parent_traversal() {
+        let td = TempDir::new().unwrap();
+        let e = engine(&td);
+        // A hostile `../../etc/passwd` must be clamped to `etc/passwd` (within the
+        // root) — the decision can never describe a path outside the root.
+        let d = e.decide("../../etc/passwd", false, Some(1));
+        assert_eq!(d.path, "etc/passwd");
+        assert!(!d.path.contains(".."));
+    }
+
+    #[test]
+    fn gitkeep_file_itself_always_synced() {
+        let td = TempDir::new().unwrap();
+        // Even when the containing dir is gitignored, the .gitkeep file is synced.
+        write(td.path(), ".gitignore", "logs/\n");
+        let e = engine(&td);
+        let d = e.decide("logs/.gitkeep", false, Some(0));
+        assert!(d.included, "the .gitkeep file itself is always synced");
+        assert_eq!(d.reason.kind, IgnoreSourceKind::Gitkeep);
+        // A sibling under the same ignored dir is still excluded.
+        let sibling = e.decide("logs/app.log", false, Some(1));
+        assert!(!sibling.included);
     }
 
     #[test]

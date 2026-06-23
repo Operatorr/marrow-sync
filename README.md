@@ -43,14 +43,24 @@ client/            # Marrow desktop app: React UI (@marrow/client-ui) + Rust cor
 docs/              # knowledge base / system of record
 ```
 
+## Prerequisites
+
+- **Node ≥20** and **pnpm** (`corepack enable` picks up the pinned version).
+- **Rust toolchain** (`rustup`, stable) for the client core.
+- **Tauri system dependencies** for your OS (WebView, build tools). See the
+  [Tauri prerequisites guide](https://tauri.app/start/prerequisites/).
+
 ## Develop
 
 ```bash
 pnpm install
-pnpm db:migrate          # apply D1 migrations (wrangler)
+pnpm db:migrate          # apply D1 migrations locally (wrangler, --local)
 pnpm dev:server          # wrangler dev — Hono on localhost
 pnpm dev:client          # tauri dev — opens the desktop app, Vite HMR for UI
 ```
+
+`pnpm db:migrate` only touches the **local** D1 instance. Production migrations
+are applied by CI via `pnpm --filter @marrow/server db:migrate:remote` on deploy.
 
 Useful root scripts: `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm build`.
 

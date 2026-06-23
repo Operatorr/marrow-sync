@@ -51,28 +51,29 @@ app.use(
   "*",
   cors({
     origin: ALLOWED_ORIGINS,
-    allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
+    allowMethods: ["GET", "POST", "DELETE"],
     allowHeaders: ["Authorization", "Content-Type"],
     credentials: true,
     maxAge: 86400,
   }),
 );
 
-// better-auth handles its own routes (OAuth, session) — must precede requireAuth.
+// better-auth handles its own routes (OAuth, session) — registered BEFORE the
+// catch-all auth guard so they stay unauthenticated.
 app.on(["GET", "POST"], "/auth/*", (c) => getAuth(c.env).handler(c.req.raw));
 
-// Health check (unauthenticated).
+// Health check (unauthenticated) — also before the guard.
 app.get("/health", (c) => c.json({ ok: true }));
 
-// Everything below requires an authenticated caller.
-app.use("/devices/*", requireAuth);
-app.use("/roots/*", requireAuth);
-app.use("/chunks/*", requireAuth);
+// Default-deny: every route mounted AFTER this line requires an authenticated
+// caller. This is an allowlist of *unauth* routes (above) rather than an
+// allowlist of *authed* prefixes, so a newly added route can't be left public by
+// forgetting its own `requireAuth` line (SPEC §10/§11).
+app.use("*", requireAuth);
 
-// The chained route object exists only to derive `AppType` for the client's RPC
-// (`hono/client`); the running app is the `app` default export. The value is
-// intentionally type-only here.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
+// Chaining `.route(...)` returns the same `app` instance; `routes` is that app
+// with the full type, used both as the running default export and to derive
+// `AppType` for the client's typed RPC (`hono/client`).
 const routes = app
   .route("/devices", devices)
   .route("/roots", roots)
@@ -82,4 +83,4 @@ const routes = app
 /** The chained app type the client imports for end-to-end-typed RPC (SPEC §5). */
 export type AppType = typeof routes;
 
-export default app;
+export default routes;

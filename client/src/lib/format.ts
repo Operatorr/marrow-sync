@@ -5,34 +5,57 @@
  * views can stay declarative.
  */
 
-import type { IgnoreDecision, IgnoreSourceKind, Platform } from "@marrow/shared";
+import type { IgnoreDecision, IgnoreSourceKind } from "@marrow/shared";
+
+// `platformLabel` lives in platform.ts (the canonical platform module) and is
+// re-exported here so existing `../lib/format` importers keep working without
+// duplicating the platform→label map.
+export { platformLabel } from "./platform";
 
 const UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 
+/** Constructed once with an explicit locale so output is stable across hosts. */
+const COUNT_FORMAT = new Intl.NumberFormat("en-US");
+
 /** Human-readable byte count, e.g. `1536` → `"1.5 KB"`. Base-1024. */
 export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), UNITS.length - 1);
-  const value = bytes / 1024 ** exponent;
+  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes === 0) return "0 B";
+
+  let exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), UNITS.length - 1);
+  let value = bytes / 1024 ** exponent;
   // Whole numbers stay integers; otherwise one decimal place.
-  const rounded =
+  let rounded =
     value >= 100 || Number.isInteger(value) ? Math.round(value) : Math.round(value * 10) / 10;
+  // Rounding can push the value to a full unit boundary (e.g. 1048575 B → 1024 KB);
+  // bump to the next unit so we never emit "1024 KB".
+  if (rounded >= 1024 && exponent < UNITS.length - 1) {
+    exponent += 1;
+    value = bytes / 1024 ** exponent;
+    rounded =
+      value >= 100 || Number.isInteger(value) ? Math.round(value) : Math.round(value * 10) / 10;
+  }
   return `${rounded} ${UNITS[exponent]}`;
 }
 
 /** A short integer count with thousands separators, e.g. `12345` → `"12,345"`. */
 export function formatCount(n: number): string {
-  return new Intl.NumberFormat().format(Math.max(0, Math.trunc(n)));
+  const safe = Number.isFinite(n) ? n : 0;
+  return COUNT_FORMAT.format(Math.max(0, Math.trunc(safe)));
 }
 
 /**
  * Relative "time ago" for a sync timestamp (epoch ms), e.g. `"just now"`,
- * `"3 min ago"`, `"2 h ago"`. `null` renders as `"never"`. Anchored against
- * `now` (injectable for deterministic tests).
+ * `"3 min ago"`, `"2 h ago"`, `"5 d ago"`, `"3 wk ago"`, then an absolute date.
+ * `null` renders as `"never"`. A timestamp in the future (clock skew) is reported
+ * as `"in the future"` rather than silently collapsing to `"just now"`. Anchored
+ * against `now` (injectable for deterministic tests).
  */
 export function formatRelativeTime(epochMs: number | null, now: number = Date.now()): string {
   if (epochMs === null) return "never";
-  const deltaSec = Math.max(0, Math.round((now - epochMs) / 1000));
+  if (!Number.isFinite(epochMs)) return "never";
+  const deltaSec = Math.round((now - epochMs) / 1000);
+  if (deltaSec < 0) return "in the future";
   if (deltaSec < 10) return "just now";
   if (deltaSec < 60) return `${deltaSec} s ago`;
   const min = Math.floor(deltaSec / 60);
@@ -40,19 +63,15 @@ export function formatRelativeTime(epochMs: number | null, now: number = Date.no
   const hours = Math.floor(min / 60);
   if (hours < 24) return `${hours} h ago`;
   const days = Math.floor(hours / 24);
-  return `${days} d ago`;
-}
-
-/** Human label for a device platform. */
-export function platformLabel(platform: Platform): string {
-  switch (platform) {
-    case "macos":
-      return "macOS";
-    case "windows":
-      return "Windows";
-    case "linux":
-      return "Linux";
-  }
+  if (days < 7) return `${days} d ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `${weeks} wk ago`;
+  // Beyond a month, an absolute date is clearer than an ever-growing count.
+  return new Date(epochMs).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 /**

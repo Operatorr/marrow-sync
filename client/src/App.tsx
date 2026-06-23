@@ -8,13 +8,15 @@
  * dependency — this is a four-view desktop app, not a website. When the UI runs
  * outside Tauri (e.g. `vite preview` or vitest) the commands surface a
  * `TauriUnavailableError`, which we render as a friendly "open the desktop app"
- * notice instead of crashing.
+ * notice instead of crashing. A backend failure resolving auth is surfaced as a
+ * dedicated error view with Retry, never collapsed into the logged-out path.
  */
 
 import { useCallback, useEffect, useState } from "react";
 
 import { authStatus, currentDevice, isTauri } from "./api/tauri";
 import type { AuthStatus, DeviceInfo } from "./api/types";
+import { Brand } from "./components/Brand";
 import { Onboarding } from "./views/Onboarding";
 import { Roots } from "./views/Roots";
 import { Settings } from "./views/Settings";
@@ -31,34 +33,46 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [outsideTauri, setOutsideTauri] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>("roots");
 
-  const refresh = useCallback(async () => {
+  // `alive` lets an in-flight refresh skip setState after the component unmounts
+  // (the react-hooks lint rule is intentionally off, so we manage this by hand).
+  const refresh = useCallback(async (alive: () => boolean = () => true) => {
     if (!isTauri()) {
+      if (!alive()) return;
       setOutsideTauri(true);
       setLoading(false);
       return;
     }
-    setLoading(true);
+    if (alive()) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const [auth, device] = await Promise.all([authStatus(), currentDevice()]);
+      if (!alive()) return;
       setSession({ auth, device });
+    } catch (e) {
+      if (!alive()) return;
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (alive()) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void refresh();
+    let alive = true;
+    void refresh(() => alive);
+    return () => {
+      alive = false;
+    };
   }, [refresh]);
 
   if (outsideTauri) {
     return (
       <div className="onboarding">
-        <div className="brand">
-          <span className="brand-dot" />
-          Marrow
-        </div>
+        <Brand />
         <p>
           This UI runs inside the Marrow desktop app. Launch it with the Tauri shell to sign in and
           sync.
@@ -70,13 +84,26 @@ export function App() {
   if (loading) {
     return (
       <div className="onboarding">
-        <div className="brand">
-          <span className="brand-dot" />
-          Marrow
-        </div>
+        <Brand />
         <p>
-          <span className="spinner" /> Loading…
+          <span className="spinner" /> <span>Loading…</span>
         </p>
+      </div>
+    );
+  }
+
+  // A backend error with no usable session: show it explicitly with a retry,
+  // rather than silently dropping the user into onboarding.
+  if (error && !session) {
+    return (
+      <div className="onboarding">
+        <Brand />
+        <div className="banner banner-error" role="alert">
+          Couldn’t reach the Marrow backend: {error}
+        </div>
+        <button type="button" className="btn btn-primary" onClick={() => void refresh()}>
+          Retry
+        </button>
       </div>
     );
   }
@@ -86,17 +113,17 @@ export function App() {
 
   if (!signedIn || !hasDevice) {
     return (
-      <Onboarding auth={session?.auth ?? { signedIn: false, user: null }} onChange={refresh} />
+      <Onboarding
+        auth={session?.auth ?? { signedIn: false, user: null }}
+        onChange={() => void refresh()}
+      />
     );
   }
 
   return (
     <div className="app">
       <nav className="sidebar">
-        <div className="brand">
-          <span className="brand-dot" />
-          Marrow
-        </div>
+        <Brand />
         <NavItem label="Roots" active={view === "roots"} onClick={() => setView("roots")} />
         <NavItem label="Status" active={view === "status"} onClick={() => setView("status")} />
         <div className="nav-spacer" />
@@ -113,7 +140,7 @@ export function App() {
           <Settings
             user={session?.auth.user ?? null}
             device={session?.device ?? null}
-            onSignOut={refresh}
+            onSignOut={() => void refresh()}
           />
         )}
       </main>

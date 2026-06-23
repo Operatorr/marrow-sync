@@ -136,6 +136,18 @@ pub struct Inner {
     pub roots: HashMap<String, RootInfo>,
     pub settings: Settings,
     pub last_sync_at: Option<i64>,
+    /// Per-root sync cursor: the last per-root `seq` fully applied (SPEC §7),
+    /// keyed by root id. Defaults to 0 for a root that has never synced. Stored
+    /// here (rather than fabricated at read time) so `sync_status` reports the real
+    /// value and the reconcile pipeline has a place to persist progress.
+    pub cursors: HashMap<String, u64>,
+}
+
+impl Inner {
+    /// The sync cursor for a root (0 if it has never synced).
+    pub fn cursor(&self, root_id: &str) -> u64 {
+        self.cursors.get(root_id).copied().unwrap_or(0)
+    }
 }
 
 /// Tauri-managed application state.
@@ -145,23 +157,17 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new() -> Self {
-        Self {
-            inner: RwLock::new(Inner {
-                settings: Settings::default(),
-                ..Inner::default()
-            }),
-        }
-    }
-
-    /// Read access to the inner state.
+    /// Read access to the inner state. On lock poisoning (a prior panic while a
+    /// guard was held) we recover the inner value rather than propagating the panic
+    /// — a single command panic must not wedge the whole app.
     pub fn read(&self) -> std::sync::RwLockReadGuard<'_, Inner> {
-        self.inner.read().expect("AppState lock poisoned")
+        self.inner.read().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Write access to the inner state.
+    /// Write access to the inner state. See [`AppState::read`] for the poisoning
+    /// recovery rationale.
     pub fn write(&self) -> std::sync::RwLockWriteGuard<'_, Inner> {
-        self.inner.write().expect("AppState lock poisoned")
+        self.inner.write().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -199,12 +205,20 @@ mod tests {
 
     #[test]
     fn appstate_read_write() {
-        let st = AppState::new();
+        let st = AppState::default();
         st.write().user = Some(UserInfo {
             id: "u".into(),
             name: "Alex".into(),
             email: "a@example.com".into(),
         });
         assert_eq!(st.read().user.as_ref().unwrap().name, "Alex");
+    }
+
+    #[test]
+    fn cursor_defaults_to_zero_and_reads_back() {
+        let st = AppState::default();
+        assert_eq!(st.read().cursor("missing"), 0);
+        st.write().cursors.insert("r1".into(), 42);
+        assert_eq!(st.read().cursor("r1"), 42);
     }
 }

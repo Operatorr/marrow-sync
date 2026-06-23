@@ -1,7 +1,7 @@
 # Knowledge base index
 
-The `docs/` **system of record** for how we build here. `AGENTS.md` is the short
-map; this holds the deeper sources of truth.
+The `docs/` directory **is the** system of record for how we build here.
+`AGENTS.md` is the short map; this holds the deeper sources of truth.
 
 ## Guidelines
 

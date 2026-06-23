@@ -38,7 +38,7 @@ export interface VersionManifest {
   size: number;
   /** Source mtime in epoch milliseconds. */
   mtime: number;
-  /** Unix permission bits (e.g. executable). Omitted on platforms without them. */
+  /** Optional Unix permission bits; absent when unknown or on platforms without them. */
   mode?: number;
   /** Ordered list of chunk hashes that reassemble the file. */
   chunks: string[];
@@ -120,7 +120,11 @@ export interface ChangesResponse {
 // ---------------------------------------------------------------------------
 
 export interface CommitRequest {
-  /** The cursor the client committed against, for conflict detection (SPEC §7). */
+  /**
+   * The cursor the client committed against, for conflict detection (SPEC §7).
+   * The target root id is taken from the URL path (`/api/roots/:id/commit`), not
+   * this body — that is why Appendix A's illustrative `rootId` field is absent.
+   */
   baseSeq: number;
   versions: VersionManifest[];
 }
@@ -174,6 +178,21 @@ export interface ApiError {
 // ---------------------------------------------------------------------------
 
 /**
+ * Tokenize a path into segments after normalizing separators. The single
+ * security-critical tokenization step shared by {@link normalizePath} and
+ * {@link hasTraversal}, so the two can never disagree about what a `..` segment
+ * is. Empty (`""`) and current-dir (`"."`) segments are dropped.
+ *
+ * NOTE: input is expected to already be root-relative POSIX. A Windows drive
+ * letter (`C:`) or UNC host is treated as an ordinary segment, not stripped —
+ * the Rust `normalize()` in `ignore.rs` behaves identically so the two sides
+ * compute byte-for-byte identical paths.
+ */
+function toSegments(path: string): string[] {
+  return path.replace(/\\/g, "/").split("/");
+}
+
+/**
  * Normalize a path to the POSIX, root-relative form used on the wire: backslashes
  * to forward slashes, collapsed duplicate slashes, no leading `./` or `/`, and
  * `.`/`..` segments resolved. A `..` is **clamped at the root** — it can never
@@ -181,10 +200,14 @@ export interface ApiError {
  * steer a future write outside the root (SPEC §9). Use {@link hasTraversal} to
  * reject such input loudly at the commit/write boundary instead of silently
  * rewriting it.
+ *
+ * Degenerate inputs (`""`, `"."`, `"/"`, `".."`) all normalize to `""` (the
+ * root itself / not a valid file path); callers must treat an empty result as
+ * "no path", not as a file.
  */
 export function normalizePath(path: string): string {
   const stack: string[] = [];
-  for (const seg of path.replace(/\\/g, "/").split("/")) {
+  for (const seg of toSegments(path)) {
     if (seg === "" || seg === ".") continue;
     if (seg === "..") {
       stack.pop(); // clamp at the root: a traversal segment never escapes it
@@ -202,21 +225,24 @@ export function normalizePath(path: string): string {
  * rewriting `../x` could collide two distinct paths onto one (SPEC §9).
  */
 export function hasTraversal(path: string): boolean {
-  return path
-    .replace(/\\/g, "/")
-    .split("/")
-    .some((seg) => seg === "..");
+  return toSegments(path).some((seg) => seg === "..");
 }
 
 /**
  * Build the conflict-copy filename for a losing last-write-wins side (SPEC §7):
- * `name (conflicted copy from <device>, <date>).ext`. Operates on the basename;
+ * `name (conflicted copy from <device>, <stamp>).ext`. Operates on the basename;
  * the caller rejoins it with the directory.
+ *
+ * The stamp is a **UTC** `YYYY-MM-DD HH-MM-SS` timestamp (colons are illegal in
+ * filenames on some platforms, so `:` is rendered as `-`). Second granularity —
+ * not day — so two conflicts from the same device close together do not collide
+ * onto one filename and silently overwrite each other.
  */
 export function conflictCopyName(fileName: string, deviceName: string, date: Date): string {
   const dot = fileName.lastIndexOf(".");
   const stem = dot > 0 ? fileName.slice(0, dot) : fileName;
   const ext = dot > 0 ? fileName.slice(dot) : "";
-  const stamp = date.toISOString().slice(0, 10); // YYYY-MM-DD
+  // UTC, second-granularity, filename-safe: "2026-06-22 10-00-00".
+  const stamp = date.toISOString().slice(0, 19).replace("T", " ").replace(/:/g, "-");
   return `${stem} (conflicted copy from ${deviceName}, ${stamp})${ext}`;
 }

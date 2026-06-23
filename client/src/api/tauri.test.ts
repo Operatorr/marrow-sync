@@ -18,11 +18,18 @@ vi.mock("@tauri-apps/api/core", () => ({
 import {
   addRoot,
   authStatus,
+  currentDevice,
   explainIgnore,
+  getSettings,
   isTauri,
+  listRoots,
   registerDevice,
+  removeRoot,
+  scanRoot,
   setRootPaused,
   setSettings,
+  signInWithGithub,
+  signOut,
   syncStatus,
   TauriUnavailableError,
   triggerSync,
@@ -72,6 +79,63 @@ describe("wrappers with a bridge", () => {
     invokeMock.mockResolvedValueOnce(payload);
     await expect(authStatus()).resolves.toEqual(payload);
     expect(invokeMock).toHaveBeenCalledWith("auth_status", undefined);
+  });
+
+  it("sign_in_with_github passes no args", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    await signInWithGithub();
+    expect(invokeMock).toHaveBeenCalledWith("sign_in_with_github", undefined);
+  });
+
+  it("sign_out passes no args", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    await signOut();
+    expect(invokeMock).toHaveBeenCalledWith("sign_out", undefined);
+  });
+
+  it("list_roots passes no args and returns the payload", async () => {
+    const roots = [
+      { id: "r1", name: "code", path: "/code", paused: false, fileCount: 3, status: "idle" },
+    ];
+    invokeMock.mockResolvedValueOnce(roots);
+    await expect(listRoots()).resolves.toEqual(roots);
+    expect(invokeMock).toHaveBeenCalledWith("list_roots", undefined);
+  });
+
+  it("remove_root maps the id arg", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    await removeRoot("r1");
+    expect(invokeMock).toHaveBeenCalledWith("remove_root", { id: "r1" });
+  });
+
+  it("scan_root maps the id arg and returns the summary", async () => {
+    const summary = { rootId: "r1", scanned: 10, included: 8, ignored: 2, bytes: 1024 };
+    invokeMock.mockResolvedValueOnce(summary);
+    await expect(scanRoot("r1")).resolves.toEqual(summary);
+    expect(invokeMock).toHaveBeenCalledWith("scan_root", { id: "r1" });
+  });
+
+  it("current_device passes no args and can return null", async () => {
+    invokeMock.mockResolvedValueOnce(null);
+    await expect(currentDevice()).resolves.toBeNull();
+    expect(invokeMock).toHaveBeenCalledWith("current_device", undefined);
+  });
+
+  it("get_settings passes no args and returns the payload", async () => {
+    const settings = { serverUrl: "https://x", autoSync: true };
+    invokeMock.mockResolvedValueOnce(settings);
+    await expect(getSettings()).resolves.toEqual(settings);
+    expect(invokeMock).toHaveBeenCalledWith("get_settings", undefined);
+  });
+
+  it("normalizes a bare-string rejection (Rust CommandError) to an Error", async () => {
+    invokeMock.mockRejectedValueOnce("sync not yet implemented");
+    const rejection = await triggerSync(null).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(rejection).toBeInstanceOf(Error);
+    expect((rejection as Error).message).toBe("sync not yet implemented");
   });
 
   it("register_device maps name + platform args", async () => {

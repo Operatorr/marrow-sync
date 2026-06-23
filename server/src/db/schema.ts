@@ -15,6 +15,7 @@
 
 import { sql } from "drizzle-orm";
 import {
+  check,
   foreignKey,
   index,
   integer,
@@ -131,7 +132,9 @@ export const device = sqliteTable(
   },
   (table) => [
     index("device_user_id_idx").on(table.userId),
-    index("device_token_hash_idx").on(table.tokenHash),
+    // UNIQUE, not just indexed: the auth middleware resolves a presented token by
+    // looking up its hash with `.limit(1)`, which assumes at most one match.
+    unique("device_token_hash_unq").on(table.tokenHash),
   ],
 );
 
@@ -160,6 +163,12 @@ export const file = sqliteTable(
       .references(() => syncRoot.id, { onDelete: "cascade" }),
     /** POSIX-normalized, relative to the root. */
     path: text("path").notNull(),
+    /**
+     * Head pointer to the current `file_version`. Deliberately NOT a DB foreign
+     * key: `file` and `file_version` reference each other (`file_version.file_id`
+     * → `file.id`), and a circular FK pair complicates SQLite migration ordering.
+     * The commit route is the sole writer and keeps this consistent (SPEC §6).
+     */
     currentVersionId: text("current_version_id"),
     /** Tombstone: 1 when the path is deleted. */
     deleted: integer("deleted").notNull().default(0),
@@ -169,6 +178,7 @@ export const file = sqliteTable(
   (table) => [
     unique("file_root_path_unq").on(table.syncRootId, table.path),
     index("file_root_seq_idx").on(table.syncRootId, table.updatedSeq),
+    check("file_deleted_bool", sql`deleted in (0, 1)`),
   ],
 );
 
@@ -185,11 +195,17 @@ export const fileVersion = sqliteTable(
     /** Unix permission bits (executable, etc.); null where unavailable. */
     mode: integer("mode"),
     createdAt: integer("created_at").notNull(),
-    createdBy: text("created_by")
-      .notNull()
-      .references(() => device.id),
+    /**
+     * Authoring device. SET NULL (not RESTRICT) on device delete so a device can
+     * be revoked even after it has authored versions; the version history stays
+     * but loses its authoring attribution (SPEC §10).
+     */
+    createdBy: text("created_by").references(() => device.id, { onDelete: "set null" }),
   },
-  (table) => [index("file_version_file_id_idx").on(table.fileId)],
+  (table) => [
+    index("file_version_file_id_idx").on(table.fileId),
+    check("file_version_size_nonneg", sql`size >= 0`),
+  ],
 );
 
 /** Content-addressed blob: one row per unique chunk per user (SPEC §6). */
@@ -206,8 +222,12 @@ export const chunk = sqliteTable(
     /** Number of file_chunk rows referencing this chunk (for GC, SPEC §6). */
     refcount: integer("refcount").notNull().default(0),
   },
-  // Composite PK: the same content hash may exist once per user (SPEC §6).
-  (table) => [primaryKey({ columns: [table.userId, table.hash] })],
+  // Composite PK: the same content hash exists at most once per user (SPEC §6).
+  (table) => [
+    primaryKey({ columns: [table.userId, table.hash] }),
+    check("chunk_refcount_nonneg", sql`refcount >= 0`),
+    check("chunk_size_nonneg", sql`size >= 0`),
+  ],
 );
 
 /** Ordered chunk list for a version — the file's "recipe" (SPEC §6). */
@@ -231,6 +251,9 @@ export const fileChunk = sqliteTable(
       columns: [table.userId, table.chunkHash],
       foreignColumns: [chunk.userId, chunk.hash],
     }),
+    // Reverse lookup "which versions reference this chunk" for GC/refcount
+    // reconciliation — FKs don't create an index in SQLite (SPEC §6 GC).
+    index("file_chunk_user_hash_idx").on(table.userId, table.chunkHash),
   ],
 );
 

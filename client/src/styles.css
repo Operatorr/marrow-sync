@@ -175,6 +175,23 @@ button {
   margin-top: 14px;
 }
 
+/* Padded card variants (replaces ad-hoc inline padding). */
+.card-pad {
+  padding: 16px;
+}
+
+.card-pad-lg {
+  padding: 18px;
+}
+
+/* Pending state shown after opening the browser for OAuth. */
+.pending-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
 .row {
   display: flex;
   align-items: center;
@@ -377,6 +394,28 @@ input[type="url"]:focus {
   background: color-mix(in srgb, var(--danger) 12%, var(--bg-elevated));
   border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
   color: var(--text);
+}
+
+.banner-success {
+  background: color-mix(in srgb, var(--ok) 13%, var(--bg-elevated));
+  border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
+  color: var(--text);
+}
+
+/* Field-level validation error, sits under an input. */
+.field-error {
+  color: var(--danger);
+  font-size: 12.5px;
+  margin: 5px 0 0;
+}
+
+input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+input[aria-invalid="true"]:focus {
+  outline-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  border-color: var(--danger);
 }
 
 .mono {

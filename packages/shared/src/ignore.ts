@@ -9,7 +9,14 @@
  * key trust feature for a tool touching source code.
  */
 
-/** Which kind of rule was responsible for an ignore decision. */
+/**
+ * Which kind of rule was responsible for an ignore decision.
+ *
+ * NOTE: the Rust enum that produces these serializes with serde
+ * `rename_all = "lowercase"`, so every variant here MUST stay a single lowercase
+ * word. A multi-word variant (e.g. `maxDepth`) would serialize as `maxdepth` on
+ * the Rust side and silently desync from a camelCase TS literal.
+ */
 export type IgnoreSourceKind =
   | "gitignore" // a .gitignore pattern (root or nested)
   | "marrowignore" // a .marrowignore pattern
@@ -23,12 +30,16 @@ export interface IgnoreReason {
   kind: IgnoreSourceKind;
   /**
    * Path of the ignore file responsible, relative to the sync root (e.g.
-   * `src/.gitignore`). Absent for `always`, `size`, and `none`.
+   * `src/.gitignore`). Absent for `always`, `gitkeep`, `size`, and `none`.
    */
   file?: string;
   /** The raw glob line that matched (e.g. `dist/` or `!keep.txt`). */
   pattern?: string;
-  /** Line number of {@link pattern} within {@link file}, 1-based. */
+  /**
+   * Line number of {@link pattern} within {@link file}, 1-based. May be absent
+   * even for a `gitignore`/`marrowignore` match if the matched pattern could not
+   * be located verbatim in the source file.
+   */
   line?: number;
 }
 

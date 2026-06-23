@@ -7,7 +7,10 @@
 
 import type { RootStatus, SyncState } from "../api/types";
 
-const LABELS: Record<RootStatus | SyncState | "paused", string> = {
+/** The synthetic `"paused"` state is supplied by the Roots view (not a wire enum). */
+export type BadgeState = RootStatus | SyncState | "paused";
+
+const LABELS: Record<BadgeState, string> = {
   idle: "Idle",
   scanning: "Scanning",
   syncing: "Syncing",
@@ -17,11 +20,19 @@ const LABELS: Record<RootStatus | SyncState | "paused", string> = {
   paused: "Paused",
 };
 
-export function StatusBadge({ state }: { state: RootStatus | SyncState | "paused" }) {
+/** Known states get a `badge-<state>` modifier; anything else stays neutral. */
+const KNOWN = new Set<string>(Object.keys(LABELS));
+
+export function StatusBadge({ state }: { state: BadgeState | (string & {}) }) {
+  // The state crosses the Rust IPC boundary, so guard against an out-of-contract
+  // value: fall back to the raw string for the label and skip the unknown
+  // modifier class (which would have no styling anyway).
+  const label = LABELS[state as BadgeState] ?? state;
+  const className = KNOWN.has(state) ? `badge badge-${state}` : "badge";
   return (
-    <span className={`badge badge-${state}`}>
+    <span className={className}>
       <span className="dot" />
-      {LABELS[state]}
+      {label}
     </span>
   );
 }

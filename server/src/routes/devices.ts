@@ -83,7 +83,8 @@ export const devices = new Hono<AppBindings>()
         name: r.name,
         platform: r.platform as DeviceListResponse["devices"][number]["platform"],
         createdAt: r.createdAt,
-        lastSeenAt: r.lastSeenAt ?? null,
+        // `lastSeenAt` is already `number | null` from the select — no coalesce needed.
+        lastSeenAt: r.lastSeenAt,
       })),
     };
     return c.json(body);

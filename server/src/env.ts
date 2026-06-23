@@ -14,17 +14,20 @@ export interface Env {
   /** Cloudflare R2 bucket binding (content-addressed chunk blobs). */
   BUCKET: R2Bucket;
 
-  // --- better-auth ---
+  // --- better-auth (secrets — never log) ---
+  /** HMAC secret used to sign sessions; presence asserted in `createAuth`. */
   BETTER_AUTH_SECRET: string;
+  /** Public base URL the Worker is served from (OAuth callbacks). */
   BETTER_AUTH_URL: string;
   GITHUB_CLIENT_ID: string;
+  /** GitHub OAuth app secret — never log. */
   GITHUB_CLIENT_SECRET: string;
 
-  // --- R2 presigning (aws4fetch) ---
+  // --- R2 presigning (aws4fetch) — secrets, never log ---
   R2_ACCOUNT_ID: string;
   R2_ACCESS_KEY_ID: string;
   R2_SECRET_ACCESS_KEY: string;
-  /** Bucket name used to build the presigned object URL. */
+  /** Bucket name used to build the presigned object URL; must equal wrangler `bucket_name`. */
   R2_BUCKET: string;
 }
 

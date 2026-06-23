@@ -25,6 +25,17 @@ import type {
   SyncStatus,
 } from "./types";
 
+/**
+ * Tauri injects its IPC bridge as `__TAURI_INTERNALS__` on `window`. Declaring it
+ * keeps the feature-detect below typed rather than relying on an untyped
+ * `in window` probe.
+ */
+declare global {
+  interface Window {
+    __TAURI_INTERNALS__?: unknown;
+  }
+}
+
 /** Thrown when a command is called outside a Tauri webview (no IPC bridge). */
 export class TauriUnavailableError extends Error {
   constructor(command: string) {
@@ -38,13 +49,22 @@ export class TauriUnavailableError extends Error {
  * onto `window`; we feature-detect it rather than sniffing a user agent.
  */
 export function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  return typeof window !== "undefined" && window.__TAURI_INTERNALS__ !== undefined;
 }
 
-/** Invoke a command, mapping the missing-bridge case to a typed error. */
+/**
+ * Invoke a command, mapping the missing-bridge case to a typed error and
+ * normalizing any rejection to an `Error`. Rust serializes its `CommandError` as
+ * a bare string, which `invoke` rejects with as-is; we wrap that so callers can
+ * always rely on `e instanceof Error` / `e.message`.
+ */
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri()) throw new TauriUnavailableError(command);
-  return invoke<T>(command, args);
+  try {
+    return await invoke<T>(command, args);
+  } catch (e) {
+    throw e instanceof Error ? e : new Error(String(e));
+  }
 }
 
 // --- Auth (SPEC §10) ---------------------------------------------------------

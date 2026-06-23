@@ -39,9 +39,22 @@ impl LocalIndex {
         Self::from_conn(Connection::open_in_memory()?)
     }
 
+    /// Current local-DB schema version. Bump alongside a migration step in
+    /// `from_conn` when the schema changes; `PRAGMA user_version` records what an
+    /// existing on-disk db was last migrated to.
+    const SCHEMA_VERSION: i64 = 1;
+
     fn from_conn(conn: Connection) -> rusqlite::Result<Self> {
-        conn.pragma_update(None, "journal_mode", "WAL").ok();
+        // WAL improves concurrent read/write but can fail on some filesystems
+        // (e.g. network mounts); log and continue with the default journal mode
+        // rather than aborting the index.
+        if let Err(e) = conn.pragma_update(None, "journal_mode", "WAL") {
+            eprintln!("marrow: could not enable WAL journal mode, continuing: {e}");
+        }
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        // Bound how long a write waits on a competing lock before erroring, so a
+        // concurrent scan/reconcile does not immediately fail with SQLITE_BUSY.
+        conn.pragma_update(None, "busy_timeout", 5000)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS file (
                  path   TEXT PRIMARY KEY,
@@ -55,6 +68,16 @@ impl LocalIndex {
                  PRIMARY KEY (path, idx)
              );",
         )?;
+
+        // Schema versioning: read the recorded version (0 for a fresh db) and stamp
+        // it to the current version. Future migrations branch on the old value here
+        // before bumping, giving on-disk indexes an upgrade path.
+        let current: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if current < Self::SCHEMA_VERSION {
+            // (No migration steps yet — v0/fresh → v1 is just the CREATE above.)
+            conn.pragma_update(None, "user_version", Self::SCHEMA_VERSION)?;
+        }
+
         Ok(Self { conn })
     }
 
@@ -124,8 +147,18 @@ impl LocalIndex {
     /// indexed state? `true` means the file must be re-chunked. An unknown path is
     /// always considered changed.
     pub fn is_changed(&self, path: &str, mtime: i64, size: i64) -> rusqlite::Result<bool> {
-        match self.get(path)? {
-            Some(existing) => Ok(existing.mtime != mtime || existing.size != size),
+        // Compare only `(mtime, size)` directly — avoid `get`, which would also load
+        // the full chunk manifest we never look at here.
+        let row = self
+            .conn
+            .query_row(
+                "SELECT mtime, size FROM file WHERE path = ?1",
+                params![path],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        match row {
+            Some((m, s)) => Ok(m != mtime || s != size),
             None => Ok(true),
         }
     }
@@ -218,5 +251,23 @@ mod tests {
         let mut idx = LocalIndex::in_memory().unwrap();
         idx.remove("ghost").unwrap();
         idx.remove("ghost").unwrap();
+    }
+
+    #[test]
+    fn on_disk_persists_across_reopen() {
+        // Exercise the real on-disk/WAL path (not the in-memory shortcut): open a
+        // file-backed db, write, drop to flush, reopen, and re-read.
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = dir.path().join("index.sqlite");
+
+        {
+            let mut idx = LocalIndex::open(&db).unwrap();
+            idx.put(&sample()).unwrap();
+        } // dropped here — connection closes, WAL checkpoints.
+
+        let idx = LocalIndex::open(&db).unwrap();
+        let got = idx.get("src/main.rs").unwrap().unwrap();
+        assert_eq!(got, sample());
+        assert_eq!(idx.paths().unwrap(), vec!["src/main.rs".to_string()]);
     }
 }

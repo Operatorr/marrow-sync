@@ -2,7 +2,7 @@
 name = "marrow"
 version = "0.1.0"
 description = "Marrow — source-code sync engine desktop client"
-authors = ["Marrow"]
+authors = ["The Marrow Authors"]
 edition = "2021"
 license = "AGPL-3.0-only"
 rust-version = "1.77"
@@ -45,6 +45,10 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Keychain), `windows-native` (Credential Manager), `sync-secret-service` (Linux
 # libsecret; pulls dbus). The keychain unit tests drive an in-test `MemStore` via the
 # `SecretStore` trait, so they stay deterministic regardless of the real backend.
+# NOTE: on Linux, verify `sync-secret-service` builds without an explicit `crypto-*`
+# feature (keyring may otherwise require selecting a crypto provider for the
+# encrypted-transport path); if a build error mentions a missing crypto provider,
+# add e.g. `crypto-rust` here.
 keyring = { version = "3.6", features = [
     "apple-native",
     "windows-native",

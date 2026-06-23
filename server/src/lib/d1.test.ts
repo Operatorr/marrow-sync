@@ -55,4 +55,23 @@ describe("selectInChunks", () => {
     expect(seen).toEqual([[1, 2], [3, 4], [5]]);
     expect(out.sort((a, b) => a - b)).toEqual([10, 20, 30, 40, 50]);
   });
+
+  it("runs a single slice when input fits the default size", async () => {
+    let calls = 0;
+    const out = await selectInChunks([1, 2, 3], async (slice) => {
+      calls++;
+      return slice;
+    });
+    expect(calls).toBe(1);
+    expect(out).toEqual([1, 2, 3]);
+  });
+
+  it("validates the chunk size before short-circuiting on empty input", async () => {
+    await expect(selectInChunks([], async (s) => s, 0)).rejects.toThrow();
+  });
+
+  it("does not de-duplicate input values (caller's responsibility)", async () => {
+    const out = await selectInChunks([1, 1, 2], async (slice) => slice, 5);
+    expect(out).toEqual([1, 1, 2]);
+  });
 });

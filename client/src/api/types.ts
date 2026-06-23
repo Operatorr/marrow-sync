@@ -2,9 +2,10 @@
 
 /**
  * TypeScript shapes for the Tauri command surface — the contract between the Rust
- * `commands.rs` layer and this UI. Every struct on the Rust side serializes
- * camelCase (`serde rename_all = "camelCase"`), so these line up with the wire
- * JSON with no manual mapping.
+ * `commands.rs` layer and this UI. Structs on the Rust side serialize camelCase
+ * (`serde rename_all = "camelCase"`); the status/platform enums serialize
+ * lowercase (single-word variants, so the two coincide today). These line up
+ * with the wire JSON with no manual mapping.
  *
  * Where a shape is already part of the shared client/server contract we reuse it
  * from `@marrow/shared` rather than redeclaring it (`IgnoreDecision`, `Platform`).
@@ -19,7 +20,6 @@ export interface UserInfo {
   id: string;
   name: string;
   email: string;
-  avatarUrl: string | null;
 }
 
 /** Result of `auth_status` — whether a session exists and who it belongs to. */

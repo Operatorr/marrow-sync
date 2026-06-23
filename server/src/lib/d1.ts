@@ -30,13 +30,15 @@ export function chunkArray<T>(items: readonly T[], size: number = IN_ARRAY_CHUNK
  * Run an `inArray`-style SELECT in param-safe sub-batches and concatenate the
  * rows. `query` receives one slice of `values` at a time; empty input short-
  * circuits to `[]` with no query issued. Order across slices is not guaranteed —
- * callers that need ordering must sort the combined result.
+ * callers that need ordering must sort the combined result. Duplicate input
+ * values are NOT de-duplicated; callers that care must pre-dedupe.
  */
 export async function selectInChunks<T, R>(
   values: readonly T[],
   query: (slice: T[]) => Promise<R[]>,
   size: number = IN_ARRAY_CHUNK,
 ): Promise<R[]> {
+  if (size < 1) throw new Error("chunk size must be >= 1");
   if (values.length === 0) return [];
   const slices = chunkArray(values, size);
   const results = await Promise.all(slices.map((slice) => query(slice)));

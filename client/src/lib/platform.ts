@@ -8,17 +8,36 @@
 
 import type { Platform } from "@marrow/shared";
 
-/** Guess the {@link Platform} from `navigator`, defaulting to `"linux"`. */
+/**
+ * Guess the {@link Platform} from `navigator`, defaulting to `"linux"`.
+ *
+ * Matches specific tokens rather than loose substrings: `"win"` is a substring of
+ * `"Darwin"` (the kernel name macOS reports in some UAs), so a naive
+ * `includes("win")` would misclassify macOS as Windows. macOS is checked first
+ * for the same reason.
+ */
 export function detectPlatform(): Platform {
   if (typeof navigator === "undefined") return "linux";
   const haystack = `${navigator.userAgent} ${navigator.platform ?? ""}`.toLowerCase();
-  if (haystack.includes("mac")) return "macos";
-  if (haystack.includes("win")) return "windows";
+  if (haystack.includes("mac") || haystack.includes("macintosh")) return "macos";
+  if (haystack.includes("windows") || haystack.includes("win32")) return "windows";
+  if (haystack.includes("linux")) return "linux";
   return "linux";
+}
+
+/** Human label for a device platform, e.g. `"macos"` → `"macOS"`. */
+export function platformLabel(platform: Platform): string {
+  switch (platform) {
+    case "macos":
+      return "macOS";
+    case "windows":
+      return "Windows";
+    case "linux":
+      return "Linux";
+  }
 }
 
 /** A friendly default device name, e.g. `"Marrow on macOS"`. */
 export function defaultDeviceName(platform: Platform): string {
-  const label = platform === "macos" ? "macOS" : platform === "windows" ? "Windows" : "Linux";
-  return `Marrow on ${label}`;
+  return `Marrow on ${platformLabel(platform)}`;
 }

@@ -9,7 +9,9 @@
  *
  * `changes` returns every file in the root whose `updated_seq` is newer than the
  * caller's cursor, with the current version's chunk manifest, plus the root's
- * current `seq` as the new cursor.
+ * current `seq` as the new cursor. The `since` cursor is EXCLUSIVE (the query is
+ * `updated_seq > since`); a client applies the response, then passes the returned
+ * `seq` back as the next `since` — it must not add 1 itself.
  *
  * `commit` applies a batch of new versions atomically against the root's logical
  * clock: it bumps `sync_root.seq`, and for each version writes `file_version` +
@@ -62,13 +64,16 @@ const sinceQuerySchema = z.object({ since: z.string().optional() });
 const MAX_COMMIT_VERSIONS = 1000;
 const MAX_COMMIT_CHUNK_REFS = 5000;
 
-const versionManifestSchema = z
+/** BLAKE3 content-address: 64 lowercase hex chars (SPEC §9, `HASH_ALGORITHM`). */
+const chunkHashSchema = z.string().regex(/^[0-9a-f]{64}$/, "expected a 64-char lowercase hex hash");
+
+export const versionManifestSchema = z
   .object({
     path: z.string().min(1),
     size: z.number().int().nonnegative(),
     mtime: z.number().int().nonnegative(),
     mode: z.number().int().optional(),
-    chunks: z.array(z.string().min(1)),
+    chunks: z.array(chunkHashSchema),
     deleted: z.boolean().optional(),
   })
   // Preserve the chunker's invariant that a live file has ≥1 chunk and a tombstone
@@ -93,7 +98,7 @@ const versionManifestSchema = z
     }
   });
 
-const commitSchema = z
+export const commitSchema = z
   .object({
     baseSeq: z.number().int().nonnegative(),
     versions: z.array(versionManifestSchema).min(1).max(MAX_COMMIT_VERSIONS),
@@ -343,19 +348,19 @@ export const changes = new Hono<AppBindings>()
         );
       }
 
-      // Decrement refcounts on a prior current version's chunks when it is
-      // superseded or tombstoned (SPEC §6 — refcount tracks live references; a
-      // GC job collects rows + R2 objects at refcount 0).
-      const decrementPriorChunks = (priorVersionId: string | null) => {
+      // Accumulate the NET refcount change per hash across the whole commit, then
+      // emit ONE update per hash after the loop. Doing it per-reference with an
+      // asymmetric `max(refcount-1, 0)` floor made the result order-dependent when
+      // a hash was both added and superseded in the same batch, which could leave a
+      // count permanently inflated (chunks never reach 0 → GC leak). A single net
+      // `max(refcount + delta, 0)` per hash is order-independent (SPEC §6).
+      const refcountDelta = new Map<string, number>();
+      const addDelta = (hash: string, n: number) =>
+        refcountDelta.set(hash, (refcountDelta.get(hash) ?? 0) + n);
+      // A superseded/tombstoned prior version's chunks each lose one live reference.
+      const releasePriorChunks = (priorVersionId: string | null) => {
         if (!priorVersionId) return;
-        for (const hash of priorChunksByVersion.get(priorVersionId) ?? []) {
-          statements.push(
-            db
-              .update(chunk)
-              .set({ refcount: sql`max(${chunk.refcount} - 1, 0)` })
-              .where(and(eq(chunk.hash, hash), eq(chunk.userId, userId))),
-          );
-        }
+        for (const hash of priorChunksByVersion.get(priorVersionId) ?? []) addDelta(hash, -1);
       };
 
       for (let i = 0; i < payload.versions.length; i++) {
@@ -380,7 +385,7 @@ export const changes = new Hono<AppBindings>()
           // Tombstone: no new version rows; just flip the head + stamp the cursor.
           if (prior) {
             // The superseded head's chunks lose their live reference.
-            decrementPriorChunks(prior.currentVersionId);
+            releasePriorChunks(prior.currentVersionId);
             statements.push(
               db
                 .update(file)
@@ -404,12 +409,12 @@ export const changes = new Hono<AppBindings>()
 
         const versionId = crypto.randomUUID();
 
-        // Upsert the file head first so file_version's FK is satisfiable, then
-        // version + chunk rows, then repoint the head at the new version.
+        // For an existing path the file row is already present and the final head
+        // update below stamps deleted:0/cursor — no intermediate update needed. For
+        // a new path, insert the head first so file_version's FK is satisfiable.
         if (prior) {
           // The about-to-be-superseded head's chunks lose their live reference.
-          decrementPriorChunks(prior.currentVersionId);
-          statements.push(db.update(file).set({ deleted: 0 }).where(eq(file.id, fileId)));
+          releasePriorChunks(prior.currentVersionId);
         } else {
           statements.push(
             db.insert(file).values({
@@ -437,13 +442,8 @@ export const changes = new Hono<AppBindings>()
 
         manifest.chunks.forEach((hash, idx) => {
           statements.push(db.insert(fileChunk).values({ versionId, idx, userId, chunkHash: hash }));
-          // Each new file_chunk row references a chunk → bump its refcount (SPEC §6).
-          statements.push(
-            db
-              .update(chunk)
-              .set({ refcount: sql`${chunk.refcount} + 1` })
-              .where(and(eq(chunk.hash, hash), eq(chunk.userId, userId))),
-          );
+          // Each new file_chunk row references a chunk → +1 live reference (SPEC §6).
+          addDelta(hash, 1);
         });
 
         statements.push(
@@ -454,11 +454,25 @@ export const changes = new Hono<AppBindings>()
         );
       }
 
+      // One net refcount update per touched hash (order-independent; skips no-ops).
+      for (const [hash, delta] of refcountDelta) {
+        if (delta === 0) continue;
+        statements.push(
+          db
+            .update(chunk)
+            .set({ refcount: sql`max(${chunk.refcount} + ${delta}, 0)` })
+            .where(and(eq(chunk.hash, hash), eq(chunk.userId, userId))),
+        );
+      }
+
       // D1 requires a non-empty tuple for batch(); the seq bump guarantees one.
       const result = await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
       // The first statement is the atomic seq bump; its RETURNING row carries the
-      // cursor this commit was allocated.
-      const newSeq = (result[0] as unknown as { seq: number }[])[0]!.seq;
+      // cursor this commit was allocated. A missing row means the root vanished
+      // between the ownership check and the batch (concurrent delete) → 404.
+      const seqRow = (result[0] as unknown as { seq: number }[] | undefined)?.[0];
+      if (!seqRow) throw errors.notFound("Sync root not found");
+      const newSeq = seqRow.seq;
 
       const body: CommitResponse = { seq: newSeq, conflicts };
       return c.json(body);

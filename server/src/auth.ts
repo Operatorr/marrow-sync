@@ -24,6 +24,21 @@ export function createAuth(env?: Env) {
   // — the adapter only needs the schema to introspect table shapes.
   const db = env ? drizzle(env.DB, { schema }) : ({} as ReturnType<typeof drizzle>);
 
+  // Fail fast at the runtime path if a required secret is missing, rather than
+  // silently constructing a weakly-configured instance whose failure surfaces
+  // deep inside a request (a misconfigured deploy should not boot). The CLI path
+  // (no `env`) tolerates absent bindings — it only introspects table shapes.
+  if (env) {
+    for (const key of [
+      "BETTER_AUTH_SECRET",
+      "BETTER_AUTH_URL",
+      "GITHUB_CLIENT_ID",
+      "GITHUB_CLIENT_SECRET",
+    ] as const) {
+      if (!env[key]) throw new Error(`Missing required auth env: ${key}`);
+    }
+  }
+
   return betterAuth({
     baseURL: env?.BETTER_AUTH_URL,
     secret: env?.BETTER_AUTH_SECRET,
@@ -42,7 +57,11 @@ export function createAuth(env?: Env) {
   });
 }
 
-/** Static instance for the better-auth CLI (schema generation). */
+/**
+ * Static instance for the better-auth CLI (schema generation) ONLY. Its database
+ * is an empty placeholder, so it must never be used in a request handler — use
+ * {@link getAuth} with the request `env` there.
+ */
 export const auth = createAuth();
 
 export type Auth = ReturnType<typeof createAuth>;
