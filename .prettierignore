@@ -1,0 +1,17 @@
+node_modules
+dist
+build
+coverage
+.wrangler
+client/src-tauri/target
+client/src-tauri/gen
+target
+pnpm-lock.yaml
+LICENSE
+NOTICE
+migrations
+# Pre-existing / vendored content not owned by this codebase
+.claude
+.agents
+docs
+skills-lock.json

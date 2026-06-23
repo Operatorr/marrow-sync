@@ -1,7 +1,7 @@
 # Knowledge base index
 
-The `docs/` **system of record** for how we build here. `AGENTS.md` is the short
-map; this holds the deeper sources of truth.
+The `docs/` directory **is the** system of record for how we build here.
+`AGENTS.md` is the short map; this holds the deeper sources of truth.
 
 ## Guidelines
 
@@ -10,6 +10,13 @@ map; this holds the deeper sources of truth.
   repo as system of record, docs-as-map, application legibility, mechanically
   enforced architecture and taste, high-throughput merge philosophy, continuous
   garbage collection.
+
+## Specifications
+
+- [Marrow — Monorepo Specification](SPEC.md) — structure, data model, sync
+  protocol, ignore semantics, chunking, auth, and tooling for the public
+  AGPL-3.0 monorepo (`client` + `server` + `packages/shared`). The scaffold in
+  this repo implements it.
 
 ## Conventions
 
